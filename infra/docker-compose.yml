@@ -9,5 +9,22 @@ services:
       - mosquitto-data:/mosquitto/data
     restart: unless-stopped
 
+  influxdb:
+    image: influxdb:2
+    container_name: telemetria-influxdb
+    ports:
+      - "8086:8086"
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUXDB_INIT_USERNAME:-admin}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_INIT_PASSWORD:?defina INFLUXDB_INIT_PASSWORD no infra/.env}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_INIT_ORG:-fsae}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_INIT_BUCKET:-telemetria}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN:?defina INFLUXDB_INIT_ADMIN_TOKEN no infra/.env}
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+    restart: unless-stopped
+
 volumes:
   mosquitto-data:
+  influxdb-data:

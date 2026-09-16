@@ -2,9 +2,12 @@ import threading
 import time
 
 import paho.mqtt.client as mqtt
+from influxdb_client import InfluxDBClient
+from influxdb_client.client.write_api import SYNCHRONOUS
 
 from conftest import TEST_USERS
 from ingestion.ingest import make_on_message
+from ingestion.influx_writer import make_influx_writer
 from mock_publisher.publisher import MQTT_TOPIC, publish_snapshot
 
 # Automatiza a validação manual que foi refeita à mão pelo menos 3 vezes
@@ -93,3 +96,48 @@ def test_multiple_snapshots_all_reach_ingestion_in_order(mosquitto_broker):
     assert len(received_points) == 3
     device_ts_values = [p.fields["device_ts_ms"] for p in received_points]
     assert device_ts_values == [0, 50, 100]
+
+
+def test_full_pipeline_mock_publisher_to_real_influxdb(mosquitto_broker, influxdb_instance):
+    # Fecha o ciclo completo do caminho histórico da arquitetura (ver
+    # SCOPE.md): mock publisher (produção) -> broker real -> ingestão
+    # (produção) -> InfluxDB real -> consulta de volta. Nenhum dos quatro
+    # elos é simulado.
+    port = mosquitto_broker
+
+    influx_client = InfluxDBClient(
+        url=influxdb_instance["url"], token=influxdb_instance["token"], org=influxdb_instance["org"],
+    )
+    write_api = influx_client.write_api(write_options=SYNCHRONOUS)
+    writer = make_influx_writer(write_api, bucket=influxdb_instance["bucket"], org=influxdb_instance["org"])
+
+    subscriber = _client("telemetria_reader")
+    subscriber.on_message = make_on_message(writer=writer)
+    _connect_and_wait(subscriber, port)
+    subscriber.subscribe(MQTT_TOPIC, qos=1)
+    time.sleep(0.3)
+
+    publisher = _client("esp32_telemetria")
+    _connect_and_wait(publisher, port)
+    publish_snapshot(publisher, t=2.5, dry_run=False)
+
+    time.sleep(1)
+    publisher.loop_stop()
+    publisher.disconnect()
+    subscriber.loop_stop()
+    subscriber.disconnect()
+
+    query_api = influx_client.query_api()
+    flux = f'''
+    from(bucket: "{influxdb_instance["bucket"]}")
+      |> range(start: 2023-01-01T00:00:00Z)
+      |> filter(fn: (r) => r._measurement == "telemetry")
+      |> filter(fn: (r) => r._field == "rpm")
+    '''
+    tables = query_api.query(flux, org=influxdb_instance["org"])
+    values = [record.get_value() for table in tables for record in table.records]
+
+    influx_client.close()
+
+    assert len(values) == 1
+    assert 800.0 <= values[0] <= 8000.0

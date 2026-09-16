@@ -14,6 +14,9 @@ node_modules/
 # Mosquitto — credenciais reais, nunca versionar (só passwd, não os .conf)
 infra/mosquitto/config/passwd
 
+# InfluxDB — credenciais reais (senha + token de admin), nunca versionar
+infra/.env
+
 # LaTeX (docs/) — arquivos auxiliares de compilação, só o .tex/.pdf são versionados
 docs/*.aux
 docs/*.log

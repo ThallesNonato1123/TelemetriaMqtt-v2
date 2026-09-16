@@ -1,6 +1,8 @@
 import socket
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 INFRA_DIR = Path(__file__).parent.parent
@@ -27,12 +29,25 @@ def _wait_for_port(port: int, timeout: float = 15.0) -> None:
     raise TimeoutError(f"mosquitto (docker compose) não respondeu na porta {port} em {timeout}s")
 
 
-def _compose_service_is_running() -> bool:
+def _compose_service_is_running(service: str = "mosquitto") -> bool:
     result = subprocess.run(
-        ["docker", "compose", "ps", "-q", "mosquitto"],
+        ["docker", "compose", "ps", "-q", service],
         cwd=INFRA_DIR, capture_output=True, text=True,
     )
     return bool(result.stdout.strip())
+
+
+def _wait_for_http_ok(url: str, timeout: float = 30.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=1) as resp:
+                if resp.status == 200:
+                    return
+        except (urllib.error.URLError, OSError):
+            pass
+        time.sleep(0.5)
+    raise TimeoutError(f"{url} não respondeu 200 em {timeout}s")
 
 
 def test_docker_compose_config_is_syntactically_valid():
@@ -89,3 +104,29 @@ def test_docker_compose_up_starts_a_working_broker():
             subprocess.run(["docker", "compose", "down"], cwd=INFRA_DIR, capture_output=True)
         if not passwd_existed:
             PASSWD_PATH.unlink(missing_ok=True)
+
+
+def test_docker_compose_up_starts_a_working_influxdb():
+    # infra/.env já existe a essa altura (fixture autouse ensure_env_file
+    # em conftest.py garante isso antes de qualquer teste rodar) -- não
+    # precisa bootstrapar nada aqui, só subir e checar.
+    was_already_running = _compose_service_is_running("influxdb")
+
+    try:
+        up = subprocess.run(
+            ["docker", "compose", "up", "-d", "influxdb"],
+            cwd=INFRA_DIR, capture_output=True, text=True,
+        )
+        assert up.returncode == 0, up.stderr
+
+        _wait_for_http_ok("http://127.0.0.1:8086/health")
+
+        ps = subprocess.run(
+            ["docker", "compose", "ps", "--format", "{{.Name}}"],
+            cwd=INFRA_DIR, capture_output=True, text=True,
+        )
+        assert "telemetria-influxdb" in ps.stdout
+    finally:
+        if not was_already_running:
+            subprocess.run(["docker", "compose", "stop", "influxdb"], cwd=INFRA_DIR, capture_output=True)
+            subprocess.run(["docker", "compose", "rm", "-f", "influxdb"], cwd=INFRA_DIR, capture_output=True)

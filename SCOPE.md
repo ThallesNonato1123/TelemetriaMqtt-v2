@@ -43,7 +43,7 @@ Todas as escolhas de tecnologia feitas até agora, num lugar só (ver `CLAUDE.md
 | Firmware | PlatformIO — env `esp32dev` (Arduino framework, board ESP32 DevKit) pra produção; env `native` (Unity) pra testes unitários sem hardware |
 | Scripts de backend | Python 3, `pytest` (testes), `paho-mqtt` (cliente MQTT) — decidido no checkpoint 2 (mock publisher), confirmado pro script de ingestão no checkpoint 4 |
 | Broker MQTT | Mosquitto, self-hosted, TLS + ACL por dispositivo |
-| Armazenamento | InfluxDB **2.x** — client oficial `influxdb-client` (Python) no script de ingestão. Assumido consistente com a terminologia de "bucket" usada nos slides do TCC antigo; confirma-se de fato no checkpoint 5 |
+| Armazenamento | InfluxDB **2.x** (confirmado no checkpoint 5, container Docker) — client oficial `influxdb-client` (Python) no script de ingestão |
 | Visualização | Grafana — datasource InfluxDB (caminho histórico) + plugin `grafana-mqtt-datasource` (open source) via Grafana Live (caminho ao vivo) |
 | Infra / VPS | Oracle Cloud Free Tier (plano B: Hetzner CX ou Contabo) |
 | Orquestração | Docker + docker-compose — todos os serviços de backend containerizados (Mosquitto, InfluxDB, Grafana, script de ingestão), tanto em dev local quanto na VPS |
@@ -142,10 +142,18 @@ Pra desenvolver e testar o pipeline de backend (broker → ingestão → InfluxD
 - **Medição (measurement)**: `telemetry`, um ponto por mensagem MQTT recebida, com os 20 sinais como campos (fields).
 - **Timestamp do ponto**: horário de **recebimento** da mensagem (relógio da própria VPS/container de ingestão), não o `ts` do payload — esse último é relativo ao boot do dispositivo (`millis()` no ESP32 real, tempo desde o início no mock), nunca hora real, então não serve como timestamp absoluto de série temporal. O `ts` original é preservado como campo de referência (`device_ts_ms`), útil pra depurar latência/jitter depois.
 - **Mensagens inválidas** (JSON corrompido ou payload com campo faltando) são descartadas e logadas, sem derrubar o processo — nunca gravadas parcialmente no banco.
-- **Rodar**: `cd backend && source .venv/bin/activate && python -m ingestion --dry-run` (imprime em vez de gravar) ou sem `--dry-run` + `--influx-url/--influx-token/--influx-org/--influx-bucket` quando o InfluxDB (checkpoint 5) existir.
+- **Rodar**: `cd backend && source .venv/bin/activate && python -m ingestion --dry-run` (imprime em vez de gravar) ou sem `--dry-run` + `--influx-url/--influx-token/--influx-org/--influx-bucket` contra o InfluxDB real (ver seção seguinte).
 - **Visualização**:
   - Ao vivo: Grafana (container Docker) + plugin `grafana-mqtt-datasource` (open source, sem custo) via Grafana Live, assinando o tópico MQTT diretamente.
   - Histórico: Grafana com datasource InfluxDB, dashboards de análise pós-evento.
+
+### InfluxDB (checkpoint 5)
+
+- **Versão**: InfluxDB 2.x confirmado (container `influxdb:2` no `docker-compose.yml`, mesmo padrão do Mosquitto) — a suposição do checkpoint 4 (terminologia de "bucket" nos slides do TCC antigo) se confirmou na prática.
+- **Setup inicial**: feito automaticamente pela própria imagem oficial na primeira subida (`DOCKER_INFLUXDB_INIT_MODE=setup`), lendo usuário/senha/org/bucket/token de variáveis de ambiente vindas de `infra/.env` (gitignored, nunca versionado — mesmo tratamento do `passwd` do Mosquitto). Template em `infra/.env.example`.
+- **Organização**: `fsae`. **Bucket**: `telemetria`. **Retenção**: infinita (sem `DOCKER_INFLUXDB_INIT_RETENTION`) — decisão consciente, já que o objetivo declarado é comparar treinos e estudar tendências ao longo de uma temporada inteira, não só o evento mais recente.
+- **Measurement**: `telemetry` (definido em `backend/ingestion/transform.py`, checkpoint 4) — um ponto por mensagem MQTT recebida, os 20 sinais como campos, `device_ts_ms` como campo de referência do timestamp original do dispositivo.
+- **Validação real**: os testes do checkpoint 4 (`test_influx_writer.py`) usavam um `write_api` mockado, já que o banco não existia. Neste checkpoint, o mesmo código de produção (`make_influx_writer`) escreve e é lido de volta de um InfluxDB real (containers efêmeros nos testes automatizados, e o `docker-compose.yml` real na validação manual) — a suposição de design do checkpoint 4 está confirmada de ponta a ponta, não só no papel.
 
 ### Docker (decisão via grill-me, ver stack tecnológico acima)
 

@@ -29,17 +29,18 @@ python -m mock_publisher --dry-run                   # roda o publisher sem brok
 python -m ingestion --dry-run                         # roda a ingestão sem broker/InfluxDB (imprime no terminal)
 ```
 
-### `infra/` — testes de ACL/auth do Mosquitto, docker-compose.yml e integração ponta a ponta (Python + Docker)
+### `infra/` — Mosquitto (ACL/auth) + InfluxDB, docker-compose.yml e integração ponta a ponta (Python + Docker)
 
 ```bash
 cd infra
 pip install -r requirements-test.txt
-pytest                                        # ACL, autenticação, docker-compose.yml real, integração ponta a ponta (mock publisher -> broker -> ingestão)
-docker compose up -d                          # broker local persistente (porta 1883, sem TLS)
+pytest                                        # ACL/auth, InfluxDB (write+query real), docker-compose.yml real, integração ponta a ponta completa
+docker compose up -d                          # broker (porta 1883) + InfluxDB (porta 8086) locais, sem TLS
+cp .env.example .env && $EDITOR .env          # credenciais do InfluxDB (gitignored) — só necessário pra rodar docker-compose você mesmo; os testes geram um .env sozinhos se faltar
 ./mosquitto/generate_passwd.sh <username>     # cria/atualiza infra/mosquitto/config/passwd (gitignored, pede senha interativamente)
 ```
 
-Os testes de ACL exigem Docker rodando (sobem containers `eclipse-mosquitto:2` de verdade, não mockam o broker).
+Os testes exigem Docker rodando (sobem containers `eclipse-mosquitto:2` e `influxdb:2` de verdade, nada é mockado nesta suíte).
 
 ### `firmware/` — ESP32 (PlatformIO)
 
@@ -55,7 +56,7 @@ pio test -e native       # testes unitários (Unity) sem hardware
 2. Script mock de publicação MQTT (simula o ESP32, sem hardware — ver seção "Simulador de desenvolvimento" no SCOPE.md)
 3. `docker-compose` local + configuração do broker Mosquitto (credenciais/ACL por dispositivo; sem TLS em dev local — ver seção "Docker" no SCOPE.md)
 4. Script de ingestão (MQTT → InfluxDB)
-5. Schema/setup do InfluxDB
+5. Schema/setup do InfluxDB (org, bucket, retenção, credenciais via `.env` — ver `SCOPE.md`)
 6. Dashboards Grafana — caminho histórico (datasource InfluxDB)
 7. Dashboard Grafana — caminho ao vivo (Grafana Live + plugin MQTT)
 8. Firmware — parser CAN (TWAI + tabela de payloads do SCOPE.md)

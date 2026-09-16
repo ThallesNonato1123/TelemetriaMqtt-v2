@@ -5,6 +5,7 @@ Instruções de trabalho para este repositório. Ver `SCOPE.md` para as decisõe
 ## Metodologia
 
 - **TDD obrigatório**: para cada checkpoint, escrever os testes antes ou junto da implementação. Nenhum checkpoint é considerado fechado com testes falhando. Isso existe para manter cada etapa pequena e verificável, evitando que o código cresça sem controle.
+- **Testes são intocáveis depois de escritos**: nunca apagar ou modificar um teste já existente para fazê-lo passar, nem para "simplificar". Se um teste está falhando, o problema é a implementação — conserte a implementação, não o teste. Se um requisito genuinamente mudou e um teste ficou obsoleto, pare e pergunte ao usuário antes de tocar nele; não decida isso sozinho. Adicionar novos testes é sempre permitido.
 - **Quem escreve o código**: Claude escreve toda a implementação. O usuário revisa — não espere que ele escreva trechos de código.
 - **Revisão por checkpoint**: parar ao final de cada checkpoint (ver lista abaixo) e aguardar aprovação explícita antes de seguir para o próximo. Não emendar múltiplos checkpoints em uma sequência sem parar.
 - **Forma de revisão**: o usuário revisa tanto lendo o código/diff quanto rodando/testando na própria máquina. Ao final de cada checkpoint, resumir o que foi feito, como rodar os testes, e como testar manualmente (se aplicável).

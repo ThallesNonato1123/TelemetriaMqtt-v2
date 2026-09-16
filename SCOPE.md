@@ -44,7 +44,7 @@ Todas as escolhas de tecnologia feitas até agora, num lugar só (ver `CLAUDE.md
 | Scripts de backend | Python 3, `pytest` (testes), `paho-mqtt` (cliente MQTT) — decidido no checkpoint 2 (mock publisher), confirmado pro script de ingestão no checkpoint 4 |
 | Broker MQTT | Mosquitto, self-hosted, TLS + ACL por dispositivo |
 | Armazenamento | InfluxDB **2.x** (confirmado no checkpoint 5, container Docker) — client oficial `influxdb-client` (Python) no script de ingestão |
-| Visualização | Grafana — datasource InfluxDB (caminho histórico) + plugin `grafana-mqtt-datasource` (open source) via Grafana Live (caminho ao vivo) |
+| Visualização | Grafana **grafana-oss:13.0.2** (confirmado no checkpoint 6, container Docker) — datasource InfluxDB (caminho histórico, provisionado como código) + plugin `grafana-mqtt-datasource` (open source) via Grafana Live (caminho ao vivo, checkpoint 7) |
 | Infra / VPS | Oracle Cloud Free Tier (plano B: Hetzner CX ou Contabo) |
 | Orquestração | Docker + docker-compose — todos os serviços de backend containerizados (Mosquitto, InfluxDB, Grafana, script de ingestão), tanto em dev local quanto na VPS |
 | Reverse proxy / TLS | Traefik — gerencia Let's Encrypt automaticamente pra Mosquitto + Grafana na VPS. Sem TLS em dev local (rede Docker isolada, não exposta à internet) |
@@ -144,8 +144,8 @@ Pra desenvolver e testar o pipeline de backend (broker → ingestão → InfluxD
 - **Mensagens inválidas** (JSON corrompido ou payload com campo faltando) são descartadas e logadas, sem derrubar o processo — nunca gravadas parcialmente no banco.
 - **Rodar**: `cd backend && source .venv/bin/activate && python -m ingestion --dry-run` (imprime em vez de gravar) ou sem `--dry-run` + `--influx-url/--influx-token/--influx-org/--influx-bucket` contra o InfluxDB real (ver seção seguinte).
 - **Visualização**:
-  - Ao vivo: Grafana (container Docker) + plugin `grafana-mqtt-datasource` (open source, sem custo) via Grafana Live, assinando o tópico MQTT diretamente.
-  - Histórico: Grafana com datasource InfluxDB, dashboards de análise pós-evento.
+  - Ao vivo: Grafana (container Docker) + plugin `grafana-mqtt-datasource` (open source, sem custo) via Grafana Live, assinando o tópico MQTT diretamente. **(checkpoint 7, ainda não implementado)**
+  - Histórico: Grafana com datasource InfluxDB, dashboards de análise pós-evento. **(checkpoint 6, confirmado — ver seção abaixo)**
 
 ### InfluxDB (checkpoint 5)
 
@@ -154,6 +154,15 @@ Pra desenvolver e testar o pipeline de backend (broker → ingestão → InfluxD
 - **Organização**: `fsae`. **Bucket**: `telemetria`. **Retenção**: infinita (sem `DOCKER_INFLUXDB_INIT_RETENTION`) — decisão consciente, já que o objetivo declarado é comparar treinos e estudar tendências ao longo de uma temporada inteira, não só o evento mais recente.
 - **Measurement**: `telemetry` (definido em `backend/ingestion/transform.py`, checkpoint 4) — um ponto por mensagem MQTT recebida, os 20 sinais como campos, `device_ts_ms` como campo de referência do timestamp original do dispositivo.
 - **Validação real**: os testes do checkpoint 4 (`test_influx_writer.py`) usavam um `write_api` mockado, já que o banco não existia. Neste checkpoint, o mesmo código de produção (`make_influx_writer`) escreve e é lido de volta de um InfluxDB real (containers efêmeros nos testes automatizados, e o `docker-compose.yml` real na validação manual) — a suposição de design do checkpoint 4 está confirmada de ponta a ponta, não só no papel.
+- **Nota operacional encontrada na prática**: o setup automático (`DOCKER_INFLUXDB_INIT_MODE=setup`) só roda na *primeira* subida com o volume de dados vazio. Trocar `infra/.env` depois que o InfluxDB já inicializou uma vez **não tem efeito** — o token/senha antigos continuam sendo os válidos até o volume (`influxdb-data`) ser apagado (`docker compose down -v`). Isso rendeu um 401 durante a validação manual deste checkpoint, resolvido limpando o volume.
+
+### Dashboards Grafana — caminho histórico (checkpoint 6)
+
+- **Provisionamento como código**: nada configurado manualmente na UI do Grafana — datasource e dashboard são arquivos versionados, montados como volume somente-leitura (`infra/grafana/provisioning/`, `infra/grafana/dashboards/`), consistente com a filosofia "code-first" do projeto (mesmo motivo de ter rejeitado Node-RED).
+- **Datasource**: InfluxDB, linguagem de consulta **Flux** (não InfluxQL), `uid` fixo (`influxdb-main`) pra o dashboard poder referenciá-lo diretamente. Credenciais (org/bucket/token) vêm das mesmas variáveis de ambiente do `.env` usadas pelo próprio serviço InfluxDB — o Grafana provisiona lendo `$INFLUXDB_INIT_ORG` etc. diretamente do ambiente do container (suporte nativo do Grafana a expansão de variável em arquivos de provisionamento).
+- **Dashboard**: `telemetria-historico`, 7 painéis (time series) agrupando os 20 sinais por categoria — RPM; Acelerador/Lambda/MAP; Temperaturas; Correntes; Velocidade GPS; Tensão da bateria; Estados digitais. Gerado por um script (`infra/grafana/generate_dashboard.py`) a partir de uma lista declarativa de painéis, não editado à mão — mais fácil de manter dado o tamanho do schema JSON do Grafana.
+- **Acoplamento a documentar**: as queries Flux do dashboard têm o nome do bucket (`telemetria`) hardcoded (Flux não herda automaticamente o `defaultBucket` do datasource) — se o nome do bucket mudar, o dashboard precisa ser regenerado também.
+- **Validação real**: testes automatizados confirmam, contra um Grafana de verdade — não só a existência dos arquivos de config — que (1) o datasource é provisionado com org/bucket corretos, (2) o dashboard aparece com os 7 painéis esperados, e (3) uma consulta real através da própria API do Grafana (`/api/ds/query`, o mesmo caminho que os painéis usam) retorna um dado escrito de propósito no InfluxDB — valida a rede entre os containers do compose, não só a configuração isolada.
 
 ### Docker (decisão via grill-me, ver stack tecnológico acima)
 

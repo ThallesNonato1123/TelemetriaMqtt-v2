@@ -94,10 +94,10 @@ def mosquitto_broker():
 def ensure_env_file():
     """
     Garante que infra/.env existe antes de qualquer teste rodar -- o
-    docker-compose.yml (checkpoint 5) exige INFLUXDB_INIT_PASSWORD e
-    INFLUXDB_INIT_ADMIN_TOKEN pra subir o serviço influxdb. Nunca
-    sobrescreve um .env real que o dev já tenha configurado (mesma lógica
-    de preservação usada pro passwd do Mosquitto em test_docker_compose.py).
+    docker-compose.yml exige INFLUXDB_INIT_PASSWORD/ADMIN_TOKEN (checkpoint
+    5) e GRAFANA_ADMIN_PASSWORD (checkpoint 6). Nunca sobrescreve um .env
+    real que o dev já tenha configurado (mesma lógica de preservação usada
+    pro passwd do Mosquitto em test_docker_compose.py).
     """
     if not ENV_PATH.exists():
         ENV_PATH.write_text(
@@ -106,6 +106,8 @@ def ensure_env_file():
             "INFLUXDB_INIT_ORG=fsae\n"
             "INFLUXDB_INIT_BUCKET=telemetria\n"
             f"INFLUXDB_INIT_ADMIN_TOKEN={secrets.token_hex(32)}\n"
+            "GRAFANA_ADMIN_USER=admin\n"
+            f"GRAFANA_ADMIN_PASSWORD={secrets.token_urlsafe(16)}\n"
         )
     yield
 

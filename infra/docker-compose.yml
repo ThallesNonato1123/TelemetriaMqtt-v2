@@ -25,6 +25,29 @@ services:
       - influxdb-data:/var/lib/influxdb2
     restart: unless-stopped
 
+  grafana:
+    image: grafana/grafana-oss:13.0.2
+    container_name: telemetria-grafana
+    depends_on:
+      - influxdb
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?defina GRAFANA_ADMIN_PASSWORD no infra/.env}
+      # Repassados pra dentro do container pra provisioning/datasources/influxdb.yml
+      # conseguir referenciar via $INFLUXDB_INIT_ORG etc. -- mesmos valores
+      # usados pelo próprio serviço influxdb acima.
+      INFLUXDB_INIT_ORG: ${INFLUXDB_INIT_ORG:-fsae}
+      INFLUXDB_INIT_BUCKET: ${INFLUXDB_INIT_BUCKET:-telemetria}
+      INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN:?defina INFLUXDB_INIT_ADMIN_TOKEN no infra/.env}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+
 volumes:
   mosquitto-data:
   influxdb-data:
+  grafana-data:

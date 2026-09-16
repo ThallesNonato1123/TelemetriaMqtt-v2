@@ -29,18 +29,21 @@ python -m mock_publisher --dry-run                   # roda o publisher sem brok
 python -m ingestion --dry-run                         # roda a ingestão sem broker/InfluxDB (imprime no terminal)
 ```
 
-### `infra/` — Mosquitto (ACL/auth) + InfluxDB, docker-compose.yml e integração ponta a ponta (Python + Docker)
+### `infra/` — Mosquitto (ACL/auth) + InfluxDB + Grafana, docker-compose.yml e integração ponta a ponta (Python + Docker)
 
 ```bash
 cd infra
 pip install -r requirements-test.txt
-pytest                                        # ACL/auth, InfluxDB (write+query real), docker-compose.yml real, integração ponta a ponta completa
-docker compose up -d                          # broker (porta 1883) + InfluxDB (porta 8086) locais, sem TLS
-cp .env.example .env && $EDITOR .env          # credenciais do InfluxDB (gitignored) — só necessário pra rodar docker-compose você mesmo; os testes geram um .env sozinhos se faltar
+pytest                                        # ACL/auth, InfluxDB (write+query real), Grafana (datasource+dashboard+query real), docker-compose.yml real, integração ponta a ponta completa
+docker compose up -d                          # broker (1883) + InfluxDB (8086) + Grafana (3000) locais, sem TLS
+cp .env.example .env && $EDITOR .env          # credenciais do InfluxDB/Grafana (gitignored) — só necessário pra rodar docker-compose você mesmo; os testes geram um .env sozinhos se faltar
 ./mosquitto/generate_passwd.sh <username>     # cria/atualiza infra/mosquitto/config/passwd (gitignored, pede senha interativamente)
+python3 grafana/generate_dashboard.py > grafana/dashboards/historico.json   # regenera o dashboard depois de editar a lista de painéis em generate_dashboard.py
 ```
 
-Os testes exigem Docker rodando (sobem containers `eclipse-mosquitto:2` e `influxdb:2` de verdade, nada é mockado nesta suíte).
+Os testes exigem Docker rodando (sobem containers `eclipse-mosquitto:2`, `influxdb:2` e `grafana-oss:13.0.2` de verdade, nada é mockado nesta suíte).
+
+**Nota operacional**: o InfluxDB só lê `infra/.env` na primeira subida (volume vazio). Se trocar as credenciais depois de já ter rodado `docker compose up` uma vez, rode `docker compose down -v` pra forçar reinicialização — senão o token antigo continua sendo o único válido, e o Grafana (e qualquer script) vai receber 401.
 
 ### `firmware/` — ESP32 (PlatformIO)
 
@@ -57,7 +60,7 @@ pio test -e native       # testes unitários (Unity) sem hardware
 3. `docker-compose` local + configuração do broker Mosquitto (credenciais/ACL por dispositivo; sem TLS em dev local — ver seção "Docker" no SCOPE.md)
 4. Script de ingestão (MQTT → InfluxDB)
 5. Schema/setup do InfluxDB (org, bucket, retenção, credenciais via `.env` — ver `SCOPE.md`)
-6. Dashboards Grafana — caminho histórico (datasource InfluxDB)
+6. Dashboards Grafana — caminho histórico (datasource InfluxDB, provisionamento como código — ver `SCOPE.md`)
 7. Dashboard Grafana — caminho ao vivo (Grafana Live + plugin MQTT)
 8. Firmware — parser CAN (TWAI + tabela de payloads do SCOPE.md)
 9. Firmware — integração MQTT/WiFi/TLS

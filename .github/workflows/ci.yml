@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  firmware:
+    name: Firmware (testes nativos, sem hardware)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Instalar PlatformIO
+        run: pip install platformio
+      - name: Rodar testes (env native)
+        working-directory: firmware
+        run: pio test -e native
+
+  backend:
+    name: Backend (mock publisher + ingestão)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Instalar dependências
+        working-directory: backend
+        run: pip install -r requirements.txt
+      - name: Rodar testes
+        working-directory: backend
+        run: pytest -v
+
+  infra:
+    name: Infra (Mosquitto ACL/auth, via Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Instalar dependências
+        working-directory: infra
+        run: pip install -r requirements-test.txt
+      - name: Rodar testes (sobe containers Mosquitto efêmeros)
+        working-directory: infra
+        run: pytest -v

@@ -50,7 +50,9 @@ Todas as escolhas de tecnologia feitas até agora, num lugar só (ver `CLAUDE.md
 | Reverse proxy / TLS | Traefik — gerencia Let's Encrypt automaticamente pra Mosquitto + Grafana na VPS. Sem TLS em dev local (rede Docker isolada, não exposta à internet) |
 | Domínio | DuckDNS (gratuito) — necessário pro desafio ACME do Let's Encrypt |
 | Hardware | ESP32 DevKit V1 (WROOM-32) + transceiver CAN SN65HVD230 |
-| Controle de versão | git, sem remote configurado (repositório só local por enquanto) |
+| Controle de versão | git + GitHub, repositório **público**: https://github.com/ThallesNonato1123/TelemetriaMqtt-v2 |
+| CI | GitHub Actions (`.github/workflows/ci.yml`) — roda as 3 suítes de teste (firmware nativo, backend, infra com Docker) a cada push/PR |
+| Releases | Tag semântica por checkpoint fechado (`v0.1.0`, `v0.2.0`, ...) — ver seção "Small releases" abaixo |
 
 ## Fonte dos dados: PDM (CAN Output)
 
@@ -161,6 +163,13 @@ Pra desenvolver e testar o pipeline de backend (broker → ingestão → InfluxD
 - **Nota de comportamento do Mosquitto** (confirmada rodando testes de integração reais): a ACL de leitura é aplicada na hora de *entregar* a mensagem, não na hora do SUBACK — um cliente sem permissão de leitura consegue assinar um tópico sem erro, mas nunca recebe nada publicado nele. Isso é esperado, não um bug.
 - TLS real (Let's Encrypt via Traefik) no broker e no Grafana — só na VPS; ambiente de desenvolvimento local roda sem TLS (rede Docker isolada, não exposta à internet).
 - **Pendência do projeto antigo**: repositório `TelemetriaMqtt` é público no GitHub e tem a senha do WiFi e credenciais do broker MQTT (HiveMQ Cloud) expostas em texto plano no histórico de commits. Recomendado trocar essas credenciais assim que possível, independente do novo projeto.
+- **Varredura pré-publicação**: antes de tornar este repositório público, foi feita uma busca em todo o histórico de commits por credenciais/segredos acidentalmente commitados. Encontradas apenas senhas de desenvolvimento descartáveis (usadas em exemplos de comando na documentação dos checkpoints 3 e 4) — sem risco real (broker só em `127.0.0.1`, nunca exposto), mas substituídas por um placeholder genérico por higiene antes do primeiro push.
+
+## Small releases e CI
+
+- **Repositório**: público no GitHub, https://github.com/ThallesNonato1123/TelemetriaMqtt-v2 (decisão explícita — diferente da hospedagem só local usada durante boa parte do desenvolvimento inicial).
+- **Releases**: uma tag semântica por checkpoint fechado (`v0.1.0` = checkpoint 1, `v0.2.0` = checkpoint 2, etc.), apontando pro commit que fecha aquele checkpoint (incluindo eventuais correções/decisões diretamente ligadas a ele). Tags criadas retroativamente para os checkpoints 1-4 ao adotar esse esquema; daqui pra frente, uma tag nova a cada checkpoint fechado.
+- **CI**: GitHub Actions (`.github/workflows/ci.yml`), 3 jobs paralelos (um por suíte de teste — firmware nativo, backend, infra com Docker), rodando a cada push e pull request. Os runners `ubuntu-latest` já vêm com Docker disponível, então os testes de ACL/autenticação do Mosquitto (que sobem containers efêmeros) rodam sem configuração extra.
 
 ## Fora de escopo por enquanto
 

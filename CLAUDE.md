@@ -10,6 +10,8 @@ Instruções de trabalho para este repositório. Ver `SCOPE.md` para as decisõe
 - **Quem escreve o código**: Claude escreve toda a implementação. O usuário revisa — não espere que ele escreva trechos de código.
 - **Revisão por checkpoint**: parar ao final de cada checkpoint (ver lista abaixo) e aguardar aprovação explícita antes de seguir para o próximo. Não emendar múltiplos checkpoints em uma sequência sem parar.
 - **Forma de revisão**: o usuário revisa tanto lendo o código/diff quanto rodando/testando na própria máquina. Ao final de cada checkpoint, resumir o que foi feito, como rodar os testes, e como testar manualmente (se aplicável).
+- **Tag por checkpoint fechado**: ao fechar um checkpoint (e o usuário aprovar o commit), criar uma tag semântica (`vX.Y.0`) apontando pro commit que fecha aquele checkpoint, e dar `git push` (branch + tags) pro remote. Ver seção "Small releases e CI" do `SCOPE.md` pro esquema completo.
+- **CI roda sozinho**: todo push aciona o GitHub Actions (`.github/workflows/ci.yml`), rodando as 3 suítes de teste. Não é preciso rodar tudo manualmente antes de cada push só por precaução — mas ainda assim rode localmente durante o desenvolvimento, o CI é uma segunda rede de proteção, não a primeira.
 
 ## Comandos
 

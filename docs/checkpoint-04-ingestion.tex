@@ -1,0 +1,267 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{parskip}
+\usepackage{titlesec}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!50!black,
+    citecolor=blue!50!black,
+}
+
+\definecolor{codebg}{RGB}{245,245,245}
+\definecolor{codegray}{RGB}{110,110,110}
+\definecolor{codegreen}{RGB}{0,110,0}
+\definecolor{codeblue}{RGB}{30,80,180}
+
+\lstdefinestyle{code}{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{codeblue},
+    commentstyle=\color{codegray}\itshape,
+    stringstyle=\color{codegreen},
+    breaklines=true,
+    breakatwhitespace=false,
+    frame=single,
+    rulecolor=\color{black!15},
+    numbers=left,
+    numberstyle=\tiny\color{codegray},
+    xleftmargin=1.8em,
+    framexleftmargin=1.5em,
+    showstringspaces=false,
+    tabsize=2,
+}
+\lstset{style=code}
+
+\titleformat{\section}{\normalfont\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{1em}{}
+
+\sloppy
+
+\title{\textbf{TelemetriaMqtt v2 --- Checkpoint 4} \\[4pt]
+\large Script de ingestão: de mensagens MQTT a pontos no InfluxDB}
+\author{Projeto de Telemetria FSAE}
+\date{16 de setembro de 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent Este documento detalha o quarto checkpoint do projeto de reconstrução do sistema de telemetria da equipe: o serviço responsável por assinar o tópico MQTT de telemetria e persistir cada mensagem como um ponto no InfluxDB, iniciando o caminho de armazenamento histórico da arquitetura. O checkpoint aborda uma decisão de design não-trivial sobre qual relógio usar como timestamp da série temporal, e mantém o padrão de testar cada camada com o nível de realismo possível dado o que já existe de infraestrutura.
+\end{abstract}
+
+\tableofcontents
+
+\section{Contexto e objetivo}
+
+A arquitetura do projeto (definida em \texttt{SCOPE.md}) separa dois caminhos de consumo dos dados de telemetria: um caminho \textbf{ao vivo}, que lê diretamente do broker MQTT via Grafana Live (sem depender de banco de dados), e um caminho \textbf{histórico}, que persiste cada mensagem no InfluxDB para análise posterior --- comparar treinos, estudar tendências ao longo de uma temporada, etc. Este checkpoint implementa o serviço que alimenta o segundo caminho.
+
+Uma particularidade da ordem dos checkpoints (documentada em \texttt{CLAUDE.md}) merece nota: o script de ingestão (checkpoint 4) é construído \textbf{antes} do InfluxDB estar de fato no ar como serviço (checkpoint 5). Isso repete o mesmo padrão já usado no checkpoint 2 (o script mock de publicação foi escrito e testado antes de existir um broker MQTT real): a lógica de negócio é implementada e testada com um cliente do banco de dados \textit{simulado} (\textit{mock}), e a validação contra uma instância real de banco fica reservada para quando essa infraestrutura entrar no ar.
+
+\section{O broker já existe: uma integração real foi possível}
+
+Diferente do checkpoint 2, neste checkpoint já existia uma peça real de infraestrutura disponível: o broker MQTT, colocado no ar no checkpoint 3. Isso permitiu uma validação manual mais completa do que seria possível antes --- o lado de \textit{consumo} de mensagens (conexão MQTT, autenticação, assinatura do tópico, parsing da mensagem) foi testado contra um broker de verdade, publicado por um script mock real (checkpoint 2). Só o lado de \textit{escrita} no InfluxDB permanece simulado neste checkpoint, e será validado com uma instância real no checkpoint seguinte.
+
+\section{Decisão de design: qual relógio vira o timestamp}
+\label{sec:timestamp}
+
+Um ponto no InfluxDB precisa de um timestamp. A opção óbvia --- e errada --- seria usar diretamente o campo \texttt{ts} presente em cada mensagem publicada pelo dispositivo (ESP32 real ou o mock publisher). O problema: esse \texttt{ts} \textbf{não é hora real}. No firmware do ESP32, ele viria da função \texttt{millis()}, que conta milissegundos desde o boot do dispositivo --- reinicia do zero toda vez que o ESP32 liga. No mock publisher, é o tempo decorrido desde o início do próprio script. Em nenhum dos dois casos esse número corresponde a uma data e hora do calendário.
+
+Se esse valor fosse usado como timestamp do banco, todo o histórico apareceria com datas erradas (por volta de 1970, já que \texttt{ts} costuma começar próximo de zero), e reinícios do dispositivo causariam saltos incoerentes na linha do tempo dos dados.
+
+A solução adotada: o \textbf{timestamp do ponto gravado no InfluxDB é o horário em que a mensagem chegou} ao serviço de ingestão --- o relógio de parede (\textit{wall clock}) do próprio servidor onde a ingestão roda, não o relógio do dispositivo remoto. O valor original de \texttt{ts} não é descartado: ele é preservado como um campo comum do ponto (\texttt{device\_ts\_ms}), disponível para análises futuras que precisem dele --- por exemplo, calcular a latência entre a geração do dado no dispositivo e sua chegada ao servidor, ou detectar mensagens fora de ordem.
+
+\section{Estrutura de arquivos criada}
+
+\begin{lstlisting}[language=bash,caption={Estrutura do diretório backend/ingestion/}]
+backend/
+  ingestion/
+    __init__.py
+    transform.py       # logica pura: payload -> InfluxPoint
+    ingest.py           # callback MQTT: parseia e chama o writer
+    influx_writer.py    # wiring com o SDK oficial do InfluxDB
+    __main__.py          # ponto de entrada de linha de comando
+  tests/
+    test_ingestion_transform.py
+    test_ingest.py
+    test_influx_writer.py
+\end{lstlisting}
+
+A mesma separação de responsabilidades usada no checkpoint 2 foi repetida aqui: \textbf{lógica pura} (transformação de dados, sem nenhum I/O) separada da \textbf{integração} (rede, banco de dados) --- o que torna a lógica de transformação trivialmente testável, e permite testar a integração com dependências simuladas.
+
+\subsection{transform.py}
+
+\begin{lstlisting}[language=Python,caption={Trecho de ingestion/transform.py}]
+MEASUREMENT = "telemetry"
+
+NUMERIC_FIELDS = [
+    "rpm", "throttlePosition", "lambda", "map", ...
+]
+
+@dataclass
+class InfluxPoint:
+    measurement: str
+    fields: dict[str, Any]
+    time_ns: int
+
+def to_point(payload: dict, received_at_ns: int) -> InfluxPoint:
+    missing = [name for name in NUMERIC_FIELDS if name not in payload]
+    if missing:
+        raise ValueError(f"payload sem os campos: {', '.join(missing)}")
+
+    fields = {name: payload[name] for name in NUMERIC_FIELDS}
+    fields["device_ts_ms"] = payload.get("ts")
+
+    return InfluxPoint(measurement=MEASUREMENT, fields=fields,
+                        time_ns=received_at_ns)
+\end{lstlisting}
+
+\texttt{InfluxPoint} é um tipo próprio do projeto, sem nenhuma dependência do SDK oficial do InfluxDB --- a tradução para o tipo \texttt{Point} da biblioteca \texttt{influxdb-client} só acontece na camada de integração (\texttt{influx\_writer.py}). Essa indireção mantém a lógica de transformação testável sem precisar importar ou simular a biblioteca do banco de dados.
+
+Mensagens com campos faltando levantam um \texttt{ValueError} explícito, em vez de gravar um ponto incompleto silenciosamente --- coerente com a postura do projeto de preferir falhar de forma visível a persistir dado corrompido.
+
+\subsection{ingest.py}
+
+\begin{lstlisting}[language=Python,caption={Trecho de ingestion/ingest.py}]
+def make_on_message(writer, clock=time.time_ns):
+    def on_message(client, userdata, msg):
+        try:
+            payload = json.loads(msg.payload)
+            point = to_point(payload, received_at_ns=clock())
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning("mensagem descartada: %s", exc)
+            return
+        writer(point)
+    return on_message
+\end{lstlisting}
+
+\texttt{make\_on\_message} é uma função de ordem superior: recebe um \texttt{writer} (qualquer função capaz de "consumir" um \texttt{InfluxPoint}) e devolve o callback \texttt{on\_message} no formato exato que a biblioteca \texttt{paho-mqtt} espera. Essa indireção permite trocar o destino real (gravação no InfluxDB) por um destino de teste (uma lista Python, por exemplo) sem duplicar nenhuma lógica de parsing.
+
+Qualquer exceção de parsing (JSON malformado) ou de validação (campo faltando, levantada por \texttt{to\_point}) é capturada e logada, sem propagar --- uma mensagem ruim nunca derruba o processo de ingestão inteiro, que precisa continuar rodando de forma contínua durante um treino ou corrida.
+
+\subsection{influx\_writer.py}
+
+\begin{lstlisting}[language=Python,caption={ingestion/influx\_writer.py}]
+def make_influx_writer(write_api, bucket: str, org: str):
+    def write(point: InfluxPoint) -> None:
+        influx_point = Point(point.measurement).time(
+            point.time_ns, WritePrecision.NS)
+        for name, value in point.fields.items():
+            if value is not None:
+                influx_point = influx_point.field(name, value)
+        write_api.write(bucket=bucket, org=org, record=influx_point)
+    return write
+\end{lstlisting}
+
+Aqui, e só aqui, o \texttt{InfluxPoint} interno do projeto é traduzido para o tipo \texttt{Point} do SDK oficial (\texttt{influxdb-client}), e de fato enviado para o banco através do \texttt{write\_api} passado por parâmetro. Campos com valor \texttt{None} (por exemplo, \texttt{device\_ts\_ms} quando o payload não trouxer \texttt{ts}) são pulados --- o próprio SDK do InfluxDB não aceita gravar um campo nulo.
+
+\subsection{\_\_main\_\_.py}
+
+O ponto de entrada de linha de comando (\texttt{python -m ingestion}) conecta as três peças: assina o tópico MQTT como o usuário \texttt{telemetria\_reader} (definido no checkpoint 3, com permissão só de leitura), e escreve através de um \texttt{writer} real (\texttt{influxdb-client}, conectado via \texttt{--influx-url/--influx-token/--influx-org/--influx-bucket}) ou, em modo \texttt{--dry-run}, um \texttt{writer} que apenas imprime cada ponto no terminal --- permitindo rodar e observar o serviço de ponta a ponta mesmo sem o InfluxDB ainda existir.
+
+Um detalhe da implementação: a biblioteca \texttt{influxdb-client} só é importada dentro da função que constrói o writer real, não no topo do arquivo --- assim, rodar em modo \texttt{--dry-run} nem exige essa dependência estar resolvida, evitando qualquer acoplamento desnecessário nesse modo de uso.
+
+\section{Testes automatizados}
+
+Onze testes novos, escritos antes ou junto de cada função correspondente, mantendo a granularidade das camadas descritas na Seção anterior.
+
+\subsection{transform.py --- 5 testes, lógica pura}
+
+\begin{enumerate}[label=\textbf{Teste \arabic*}]
+    \item \texttt{test\_to\_point\_maps\_all\_20\_numeric\_fields} --- confirma que todo sinal declarado vira um campo do ponto, nenhum esquecido.
+    \item \texttt{test\_to\_point\_uses\_measurement\_name} --- confirma o nome fixo da measurement (\texttt{"telemetry"}).
+    \item \texttt{test\_to\_point\_uses\_received\_at\_as\_time\_not\_device\_ts} --- valida diretamente a decisão de design da Seção~\ref{sec:timestamp}: o \texttt{time\_ns} do ponto é o horário de chegada passado como parâmetro, não derivado do \texttt{ts} do payload.
+    \item \texttt{test\_to\_point\_keeps\_device\_ts\_as\_a\_reference\_field} --- confirma que o \texttt{ts} original não é perdido, aparecendo como \texttt{device\_ts\_ms}.
+    \item \texttt{test\_to\_point\_raises\_on\_missing\_field} --- confirma que um payload incompleto levanta \texttt{ValueError} em vez de ser aceito parcialmente.
+\end{enumerate}
+
+\subsection{ingest.py --- 3 testes, wiring com writer falso}
+
+\begin{enumerate}[label=\textbf{Teste \arabic*}]
+    \item \texttt{test\_on\_message\_parses\_valid\_payload\_and\_calls\_writer} --- simula uma mensagem MQTT válida chegando e confirma que o writer é chamado com o ponto correto.
+    \item \texttt{test\_on\_message\_ignores\_invalid\_json} --- confirma que uma mensagem com JSON corrompido é descartada silenciosamente (do ponto de vista do writer, que nunca é chamado).
+    \item \texttt{test\_on\_message\_ignores\_payload\_missing\_fields} --- mesmo comportamento, para um payload estruturalmente válido mas incompleto.
+\end{enumerate}
+
+\subsection{influx\_writer.py --- 3 testes, SDK mockado}
+
+\begin{enumerate}[label=\textbf{Teste \arabic*}]
+    \item \texttt{test\_writer\_calls\_write\_api\_with\_correct\_bucket\_and\_org} --- confirma que o \texttt{write\_api.write(...)} é chamado com o bucket e a organização configurados.
+    \item \texttt{test\_writer\_builds\_point\_with\_measurement\_fields\_and\_time} --- inspeciona o \textit{line protocol} do ponto construído (formato textual que o InfluxDB usa internamente) para confirmar measurement, campos e timestamp corretos, incluindo a formatação de inteiros (sufixo \texttt{i}) do próprio protocolo do banco.
+    \item \texttt{test\_writer\_skips\_none\_fields} --- confirma que um campo com valor \texttt{None} não é enviado ao SDK (que rejeitaria essa chamada).
+\end{enumerate}
+
+\subsection{Resultado da execução}
+
+\begin{lstlisting}[caption={Saída real de \texttt{pytest -v} (suíte completa do backend/)}]
+tests/test_influx_writer.py::test_writer_calls_write_api_with_correct_bucket_and_org PASSED
+tests/test_influx_writer.py::test_writer_builds_point_with_measurement_fields_and_time PASSED
+tests/test_influx_writer.py::test_writer_skips_none_fields PASSED
+tests/test_ingest.py::test_on_message_parses_valid_payload_and_calls_writer PASSED
+tests/test_ingest.py::test_on_message_ignores_invalid_json PASSED
+tests/test_ingest.py::test_on_message_ignores_payload_missing_fields PASSED
+tests/test_ingestion_transform.py::test_to_point_maps_all_20_numeric_fields PASSED
+tests/test_ingestion_transform.py::test_to_point_uses_measurement_name PASSED
+tests/test_ingestion_transform.py::test_to_point_uses_received_at_as_time_not_device_ts PASSED
+tests/test_ingestion_transform.py::test_to_point_keeps_device_ts_as_a_reference_field PASSED
+tests/test_ingestion_transform.py::test_to_point_raises_on_missing_field PASSED
+[... 11 testes do checkpoint 2, intactos ...]
+
+22 passed in 0.15s
+\end{lstlisting}
+
+Os 11 testes dos checkpoints anteriores continuam passando sem nenhuma alteração --- consistente com a regra de processo estabelecida no checkpoint 2 (testes já escritos nunca são modificados).
+
+\section{Validação manual ponta a ponta}
+
+Com o broker MQTT real (checkpoint 3) disponível, foi possível validar boa parte do fluxo com componentes reais, não apenas simulados: o script mock (checkpoint 2) publicando de verdade, através do broker de verdade, sendo consumido pelo script de ingestão novo, em modo \texttt{--dry-run} (já que o InfluxDB ainda não existe):
+
+\begin{lstlisting}[language=bash,caption={Comando de validação manual}]
+docker compose up -d   # sobe o broker real (infra/)
+
+python -m ingestion --host 127.0.0.1 --port 1883 --no-tls \
+  --username telemetria_reader --password dev-reader-pw --dry-run &
+
+python -m mock_publisher --host 127.0.0.1 --port 1883 --no-tls \
+  --username esp32_telemetria --password dev-publisher-pw --duration 1.5
+\end{lstlisting}
+
+\begin{lstlisting}[caption={Trecho da saída real observada}]
+Assinando 'telemetria/esp32/data' em 127.0.0.1:1883, gravando em (dry-run)
+[dry-run] telemetry {'rpm': 4400.0, ..., 'device_ts_ms': 0} t=1789579648744539691
+[dry-run] telemetry {'rpm': 4588.41, ..., 'device_ts_ms': 50} t=1789579648794445042
+[dry-run] telemetry {'rpm': 4776.3, ..., 'device_ts_ms': 100} t=1789579648844634876
+\end{lstlisting}
+
+O resultado confirma visualmente a decisão da Seção~\ref{sec:timestamp}: o campo \texttt{device\_ts\_ms} mostra os valores relativos originais do mock (\texttt{0}, \texttt{50}, \texttt{100}, ...), enquanto \texttt{t} (o \texttt{time\_ns} de fato usado como timestamp do ponto) mostra um valor de relógio real, em nanossegundos desde a época Unix --- exatamente a separação pretendida entre os dois conceitos de tempo.
+
+\subsection*{Detalhe encontrado durante a execução}
+
+A primeira tentativa dessa validação não mostrou nenhuma saída do script de ingestão, mesmo funcionando corretamente por trás dos panos. A causa: o comando usado para limitar a duração da execução (\texttt{timeout}) envia o sinal \texttt{SIGTERM} ao processo Python, que por padrão \textbf{não} garante o descarregamento (\textit{flush}) do buffer de saída padrão antes de encerrar --- as linhas impressas ficaram retidas em memória e nunca chegaram ao terminal. A correção foi rodar o Python em modo não-bufferizado (\texttt{python -u}), que escreve cada linha imediatamente. Esse é um lembrete de que \texttt{print()} para depuração em processos de longa duração deve levar em conta como o processo é efetivamente encerrado em produção.
+
+\section{Resumo do que ficou pronto}
+
+\begin{itemize}
+    \item Serviço de ingestão completo, assinando o broker como usuário read-only e transformando mensagens em pontos do InfluxDB.
+    \item Decisão de design documentada e testada: timestamp do banco é o horário de recebimento, não o relógio (não-absoluto) do dispositivo remoto.
+    \item Tratamento explícito de mensagens inválidas, sem gravação parcial e sem derrubar o processo.
+    \item 11 testes automatizados novos, mantendo a separação entre lógica pura e integração já estabelecida no checkpoint 2.
+    \item Validação manual real do lado de consumo MQTT (broker de verdade), com o lado de escrita no InfluxDB simulado até a próxima etapa.
+\end{itemize}
+
+\section{Próximos passos}
+
+O checkpoint 5 coloca o InfluxDB real no ar (via Docker, seguindo o mesmo padrão do broker MQTT), permitindo validar pela primeira vez a escrita de ponta a ponta contra uma instância de banco de dados de verdade --- e confirmar definitivamente a suposição de InfluxDB 2.x levantada neste checkpoint.
+
+\end{document}

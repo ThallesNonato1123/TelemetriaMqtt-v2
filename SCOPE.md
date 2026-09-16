@@ -97,12 +97,12 @@ Referências de compra (Mercado Livre, entrega Brasil):
 
 ## Simulador de desenvolvimento (mock, sem hardware)
 
-Pra desenvolver e testar o pipeline de backend (broker → ingestão → InfluxDB → Grafana, incluindo o painel ao vivo) antes de ter o ESP32/transceiver em mãos ou acesso ao carro, um **script mock rodando no PC** finge ser o dispositivo real:
+Pra desenvolver e testar o pipeline de backend (broker → ingestão → InfluxDB → Grafana, incluindo o painel ao vivo) antes de ter o ESP32/transceiver em mãos ou acesso ao carro, um **script mock em Python rodando no PC** (`backend/mock_publisher/`) finge ser o dispositivo real:
 
-- Publica diretamente no broker MQTT (mesmo tópico e mesmo schema de JSON que o firmware do ESP32 vai usar em produção).
-- Gera valores sintéticos para as 20 variáveis da tabela de payloads, respeitando as frequências definidas por sinal (20/10/5/2 Hz).
+- Publica no tópico MQTT **`telemetria/esp32/data`**, uma mensagem JSON combinada (todos os 20 sinais + `ts` em ms) por tick, a **20Hz** (a frequência mais rápida da tabela). Esse será o mesmo contrato do firmware do ESP32 em produção.
+- Sinais de frequência mais lenta (10/5/2 Hz) repetem o último valor amostrado dentro da própria mensagem, em vez de interpolar — reproduz fielmente como o dado real vai se comportar (lógica em `signal_generator.py`, coberta por testes `pytest`).
 - Não envolve CAN bus físico, transceiver ou segundo microcontrolador — só testa a camada lógica (MQTT + backend), não a camada elétrica do CAN.
-- Linguagem a definir (provavelmente a mesma do script de ingestão, pra reaproveitar o schema/tipos).
+- Rodar: `cd backend && source .venv/bin/activate && python -m mock_publisher --dry-run` (imprime no terminal) ou sem `--dry-run` + `--host/--port/--username/--password` uma vez que o broker (checkpoint 3) existir.
 
 **Fora de escopo por enquanto**: validar a camada física do CAN (ESP32 + transceiver recebendo quadros CAN reais ou simulados via bus físico) fica pra quando tivermos o hardware e/ou acesso ao carro — não é bloqueio para começar o desenvolvimento do backend.
 

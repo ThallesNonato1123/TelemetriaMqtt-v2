@@ -29,12 +29,12 @@ python -m mock_publisher --dry-run                   # roda o publisher sem brok
 python -m ingestion --dry-run                         # roda a ingestão sem broker/InfluxDB (imprime no terminal)
 ```
 
-### `infra/` — testes de ACL do Mosquitto (Python + Docker)
+### `infra/` — testes de ACL/auth do Mosquitto, docker-compose.yml e integração ponta a ponta (Python + Docker)
 
 ```bash
 cd infra
 pip install -r requirements-test.txt
-pytest                                        # sobe um Mosquitto efêmero (Docker) com o acl.conf real e testa as regras
+pytest                                        # ACL, autenticação, docker-compose.yml real, integração ponta a ponta (mock publisher -> broker -> ingestão)
 docker compose up -d                          # broker local persistente (porta 1883, sem TLS)
 ./mosquitto/generate_passwd.sh <username>     # cria/atualiza infra/mosquitto/config/passwd (gitignored, pede senha interativamente)
 ```

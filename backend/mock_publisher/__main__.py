@@ -43,6 +43,23 @@ def build_client(args):
     return client
 
 
+def run_publish_loop(client, dry_run, duration, clock=time.monotonic, sleep=time.sleep):
+    """
+    Loop principal: publica um snapshot a cada tick (1/PUBLISH_HZ segundos)
+    até `duration` segundos se passarem (ou pra sempre, se duration=None).
+    `clock`/`sleep` são injetáveis pra permitir testar sem esperar tempo
+    real de verdade -- os testes usam um relógio falso que avança sozinho.
+    """
+    start = clock()
+    tick = 1.0 / PUBLISH_HZ
+    while True:
+        t = clock() - start
+        if duration is not None and t > duration:
+            break
+        publish_snapshot(client, t, dry_run=dry_run)
+        sleep(tick)
+
+
 def main():
     args = parse_args()
     client = build_client(args)
@@ -50,15 +67,8 @@ def main():
     destination = "(dry-run)" if args.dry_run else f"-> {args.host}:{args.port}"
     print(f"Publicando no tópico '{MQTT_TOPIC}' a {PUBLISH_HZ}Hz {destination}")
 
-    start = time.monotonic()
-    tick = 1.0 / PUBLISH_HZ
     try:
-        while True:
-            t = time.monotonic() - start
-            if args.duration is not None and t > args.duration:
-                break
-            publish_snapshot(client, t, dry_run=args.dry_run)
-            time.sleep(tick)
+        run_publish_loop(client, dry_run=args.dry_run, duration=args.duration)
     except KeyboardInterrupt:
         pass
     finally:

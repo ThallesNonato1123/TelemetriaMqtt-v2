@@ -8,7 +8,11 @@ set -euo pipefail
 
 USERNAME="${1:?uso: generate_passwd.sh <username>}"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_DIR="$DIR/config"
+# MOSQUITTO_CONFIG_DIR permite apontar pra um diretório alternativo (usado
+# pelos testes, pra não arriscar sujar infra/mosquitto/config/passwd de
+# verdade) -- uso normal não define essa variável, então o comportamento
+# de sempre (config/ ao lado do script) não muda.
+CONFIG_DIR="${MOSQUITTO_CONFIG_DIR:-$DIR/config}"
 
 mkdir -p "$CONFIG_DIR"
 touch "$CONFIG_DIR/passwd"

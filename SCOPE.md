@@ -41,9 +41,9 @@ Todas as escolhas de tecnologia feitas até agora, num lugar só (ver `CLAUDE.md
 | Camada | Escolha |
 |---|---|
 | Firmware | PlatformIO — env `esp32dev` (Arduino framework, board ESP32 DevKit) pra produção; env `native` (Unity) pra testes unitários sem hardware |
-| Scripts de backend | Python 3, `pytest` (testes), `paho-mqtt` (cliente MQTT) — decidido no checkpoint 2 (mock publisher); vale como padrão pro script de ingestão (checkpoint 4) também |
+| Scripts de backend | Python 3, `pytest` (testes), `paho-mqtt` (cliente MQTT) — decidido no checkpoint 2 (mock publisher), confirmado pro script de ingestão no checkpoint 4 |
 | Broker MQTT | Mosquitto, self-hosted, TLS + ACL por dispositivo |
-| Armazenamento | InfluxDB |
+| Armazenamento | InfluxDB **2.x** — client oficial `influxdb-client` (Python) no script de ingestão. Assumido consistente com a terminologia de "bucket" usada nos slides do TCC antigo; confirma-se de fato no checkpoint 5 |
 | Visualização | Grafana — datasource InfluxDB (caminho histórico) + plugin `grafana-mqtt-datasource` (open source) via Grafana Live (caminho ao vivo) |
 | Infra / VPS | Oracle Cloud Free Tier (plano B: Hetzner CX ou Contabo) |
 | Orquestração | Docker + docker-compose — todos os serviços de backend containerizados (Mosquitto, InfluxDB, Grafana, script de ingestão), tanto em dev local quanto na VPS |
@@ -132,8 +132,15 @@ Pra desenvolver e testar o pipeline de backend (broker → ingestão → InfluxD
 
 - **VPS**: começar em Oracle Cloud Free Tier (4 vCPU ARM / 24GB RAM, custo zero); plano B pago (Hetzner CX ou Contabo, ~$5-7/mês) se o free tier se mostrar instável ou a instância for reclamada por ociosidade.
 - **Broker MQTT**: Mosquitto, container Docker, com credenciais/ACL por dispositivo (o ESP32 só publica no seu próprio tópico, sem acesso admin ao broker).
-- **Ingestão histórica**: script próprio (Python ou Node.js, a definir), assina o broker e grava no InfluxDB — versionado junto com o resto do código, não Node-RED.
+- **Ingestão histórica**: script próprio em Python (`backend/ingestion/`, checkpoint 4), assina o broker como `telemetria_reader` e grava no InfluxDB via `influxdb-client` — versionado junto com o resto do código, não Node-RED.
 - **Armazenamento**: InfluxDB, container Docker.
+
+### Script de ingestão (checkpoint 4)
+
+- **Medição (measurement)**: `telemetry`, um ponto por mensagem MQTT recebida, com os 20 sinais como campos (fields).
+- **Timestamp do ponto**: horário de **recebimento** da mensagem (relógio da própria VPS/container de ingestão), não o `ts` do payload — esse último é relativo ao boot do dispositivo (`millis()` no ESP32 real, tempo desde o início no mock), nunca hora real, então não serve como timestamp absoluto de série temporal. O `ts` original é preservado como campo de referência (`device_ts_ms`), útil pra depurar latência/jitter depois.
+- **Mensagens inválidas** (JSON corrompido ou payload com campo faltando) são descartadas e logadas, sem derrubar o processo — nunca gravadas parcialmente no banco.
+- **Rodar**: `cd backend && source .venv/bin/activate && python -m ingestion --dry-run` (imprime em vez de gravar) ou sem `--dry-run` + `--influx-url/--influx-token/--influx-org/--influx-bucket` quando o InfluxDB (checkpoint 5) existir.
 - **Visualização**:
   - Ao vivo: Grafana (container Docker) + plugin `grafana-mqtt-datasource` (open source, sem custo) via Grafana Live, assinando o tópico MQTT diretamente.
   - Histórico: Grafana com datasource InfluxDB, dashboards de análise pós-evento.

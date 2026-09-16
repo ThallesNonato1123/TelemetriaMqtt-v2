@@ -15,15 +15,16 @@ Instruções de trabalho para este repositório. Ver `SCOPE.md` para as decisõe
 
 Repo tem três áreas independentes, cada uma com seu próprio ambiente de teste.
 
-### `backend/` — mock publisher (Python)
+### `backend/` — mock publisher + ingestão (Python)
 
 ```bash
 cd backend
 python -m venv .venv && source .venv/bin/activate   # primeira vez
 pip install -r requirements.txt
-pytest                                               # todos os testes
+pytest                                               # todos os testes (mock publisher + ingestão)
 pytest tests/test_signal_generator.py -k nome_do_teste  # um teste específico
 python -m mock_publisher --dry-run                   # roda o publisher sem broker (imprime no terminal)
+python -m ingestion --dry-run                         # roda a ingestão sem broker/InfluxDB (imprime no terminal)
 ```
 
 ### `infra/` — testes de ACL do Mosquitto (Python + Docker)

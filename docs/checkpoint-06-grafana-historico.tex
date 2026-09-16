@@ -1,0 +1,164 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{parskip}
+\usepackage{titlesec}
+
+\hypersetup{colorlinks=true, linkcolor=blue!50!black, urlcolor=blue!50!black, citecolor=blue!50!black}
+
+\definecolor{codebg}{RGB}{245,245,245}
+\definecolor{codegray}{RGB}{110,110,110}
+\definecolor{codegreen}{RGB}{0,110,0}
+\definecolor{codeblue}{RGB}{30,80,180}
+
+\lstdefinestyle{code}{
+    backgroundcolor=\color{codebg}, basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{codeblue}, commentstyle=\color{codegray}\itshape,
+    stringstyle=\color{codegreen}, breaklines=true, breakatwhitespace=false,
+    frame=single, rulecolor=\color{black!15}, numbers=left,
+    numberstyle=\tiny\color{codegray}, xleftmargin=1.8em, framexleftmargin=1.5em,
+    showstringspaces=false, tabsize=2,
+    literate=
+      {á}{{\'a}}1 {à}{{\`a}}1 {ã}{{\~a}}1 {â}{{\^a}}1
+      {é}{{\'e}}1 {ê}{{\^e}}1 {í}{{\'i}}1
+      {ó}{{\'o}}1 {õ}{{\~o}}1 {ô}{{\^o}}1 {ú}{{\'u}}1
+      {ç}{{\c c}}1 {Á}{{\'A}}1 {É}{{\'E}}1 {Í}{{\'I}}1
+      {Ó}{{\'O}}1 {Ú}{{\'U}}1 {Ã}{{\~A}}1 {Õ}{{\~O}}1
+      {Ç}{{\c C}}1,
+}
+\lstset{style=code}
+
+\titleformat{\section}{\normalfont\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{1em}{}
+
+\sloppy
+
+\title{\textbf{TelemetriaMqtt v2 --- Checkpoint 6} \\[4pt]
+\large Dashboards Grafana --- caminho histórico}
+\author{Projeto de Telemetria FSAE}
+\date{16 de setembro de 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent Este documento detalha o sexto checkpoint do projeto: colocar o Grafana no ar como container Docker, com o datasource InfluxDB e um dashboard de análise histórica provisionados inteiramente como código -- nenhuma configuração manual pela interface web.
+\end{abstract}
+
+\tableofcontents
+
+\section{Contexto e objetivo}
+
+O caminho histórico da arquitetura (definida no \texttt{SCOPE.md}) termina em dashboards Grafana consultando o InfluxDB (colocado no ar no checkpoint 5). A decisão de arquitetura relevante aqui: assim como o broker e o banco, o Grafana também é provisionado \textbf{como código} -- datasource e dashboard são arquivos versionados no repositório, não cliques numa interface que ninguém mais consegue reproduzir. É a mesma razão pela qual o projeto rejeitou Node-RED no planejamento inicial.
+
+\section{Estrutura adicionada}
+
+\begin{lstlisting}[language=bash,caption={Arquivos novos}]
+infra/
+  docker-compose.yml                      (+ serviço grafana)
+  grafana/
+    generate_dashboard.py                  (gera o dashboard a partir de uma lista)
+    dashboards/
+      historico.json                       (gerado, não editado à mão)
+    provisioning/
+      datasources/influxdb.yml
+      dashboards/dashboards.yml
+\end{lstlisting}
+
+\subsection{Datasource}
+
+\begin{lstlisting}[language=yaml,caption={infra/grafana/provisioning/datasources/influxdb.yml}]
+datasources:
+  - name: InfluxDB
+    uid: influxdb-main
+    type: influxdb
+    access: proxy
+    url: http://influxdb:8086
+    isDefault: true
+    jsonData:
+      version: Flux
+      organization: $INFLUXDB_INIT_ORG
+      defaultBucket: $INFLUXDB_INIT_BUCKET
+    secureJsonData:
+      token: $INFLUXDB_INIT_ADMIN_TOKEN
+\end{lstlisting}
+
+Dois pontos relevantes: a linguagem de consulta é \textbf{Flux} (não InfluxQL, a linguagem legada), consistente com o InfluxDB 2.x; e as credenciais vêm das \textbf{mesmas} variáveis de ambiente já usadas pelo próprio serviço InfluxDB (\texttt{infra/.env}) -- o Grafana suporta expansão de variável de ambiente diretamente nos arquivos de provisionamento, então não existe uma segunda cópia das credenciais em lugar nenhum. O \texttt{uid} fixo (\texttt{influxdb-main}) permite que o dashboard referencie esse datasource diretamente, sem precisar descobrir o UID em tempo de execução.
+
+\subsection{Dashboard gerado por script}
+
+Em vez de editar o JSON do dashboard à mão (o schema do Grafana é grande e repetitivo -- cada painel tem dezenas de campos), um script Python (\texttt{generate\_dashboard.py}) gera o arquivo a partir de uma lista declarativa de painéis:
+
+\begin{lstlisting}[language=Python,caption={Trecho de generate\_dashboard.py}]
+PANELS = [
+    {"title": "RPM", "fields": ["rpm"], "unit": "none"},
+    {"title": "Acelerador / Lambda / MAP",
+     "fields": ["throttlePosition", "lambda", "map"], "unit": "none"},
+    {"title": "Temperaturas (°C)",
+     "fields": ["engineTemp", "airTemp"], "unit": "celsius"},
+    {"title": "Correntes (A)",
+     "fields": ["ventoinhaCurrent", "bombaCurrent", ...], "unit": "amp"},
+    {"title": "Velocidade GPS (km/h)", "fields": ["gpsSpeed"], ...},
+    {"title": "Tensão da bateria (V)", "fields": ["extBattery"], ...},
+    {"title": "Estados digitais",
+     "fields": ["bombaInput", "giratoriaInput"], "unit": "none"},
+]
+\end{lstlisting}
+
+Os 20 sinais de telemetria (mesma lista do \texttt{mock\_publisher}/firmware) foram agrupados em 7 painéis por categoria, em vez de 20 painéis individuais -- mais legível pra uma primeira análise histórica. Cada painel vira uma consulta Flux gerada automaticamente:
+
+\begin{lstlisting}[caption={Query Flux gerada pro painel "RPM"}]
+from(bucket: "telemetria")
+  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)
+  |> filter(fn: (r) => r._measurement == "telemetry")
+  |> filter(fn: (r) => r._field == "rpm")
+\end{lstlisting}
+
+\textbf{Acoplamento a documentar}: o nome do bucket (\texttt{"telemetria"}) está fixo nas queries geradas -- o Flux não herda automaticamente o \texttt{defaultBucket} configurado no datasource. Se o bucket for renomeado no futuro, o dashboard precisa ser regenerado (\texttt{python3 generate\_dashboard.py > dashboards/historico.json}), não só o datasource reconfigurado.
+
+\section{Testes}
+
+Quatro testes validam este checkpoint contra um Grafana real (não mockado):
+
+\begin{enumerate}[label=\textbf{Teste \arabic*}]
+    \item \texttt{test\_docker\_compose\_up\_starts\_a\_working\_grafana} -- sobe influxdb+grafana via \texttt{docker-compose.yml} real, confirma: o healthcheck responde; o datasource provisionado tem o tipo, organização e bucket corretos; o dashboard \texttt{telemetria-historico} aparece na busca com exatamente 7 painéis.
+    \item \texttt{test\_grafana\_queries\_real\_data\_through\_provisioned\_datasource} -- a validação mais forte do checkpoint: escreve um ponto no InfluxDB usando o \texttt{make\_influx\_writer} de produção, e consulta de volta através da \textbf{própria API do Grafana} (\texttt{/api/ds/query}, o mesmo endpoint que os painéis do dashboard usam internamente) -- não direto no InfluxDB. Confirma que a rede entre os containers do compose, a autenticação do datasource e a linguagem Flux configurada funcionam de ponta a ponta, não só que "a configuração parece certa" olhando os arquivos.
+\end{enumerate}
+
+\subsection{Resultado da execução}
+
+\begin{lstlisting}[caption={Saída real de pytest -v}]
+test_docker_compose.py::test_docker_compose_up_starts_a_working_grafana PASSED
+test_docker_compose.py::test_grafana_queries_real_data_through_provisioned_datasource PASSED
+\end{lstlisting}
+
+\section{Validação manual}
+
+Antes mesmo de escrever os testes automatizados, o comportamento foi confirmado manualmente via \texttt{curl} contra a API REST do Grafana: \texttt{/api/health}, \texttt{/api/datasources} (confirmando organização/bucket corretos), \texttt{/api/search} e \texttt{/api/dashboards/uid/telemetria-historico} (confirmando os 7 painéis), e por fim uma consulta real via \texttt{/api/ds/query} depois de publicar dados reais através do pipeline completo (mock publisher $\to$ broker $\to$ ingestão), retornando os pontos de RPM esperados.
+
+\section{Nota sobre metodologia}
+
+Este checkpoint é o exemplo mais claro, até agora, de uma inversão da ordem de TDD no projeto: toda a infraestrutura (serviço no compose, datasource, dashboard) foi construída primeiro, validada manualmente via \texttt{curl}, e só depois os testes automatizados foram escritos -- essencialmente codificando um comportamento que já tinha sido confirmado, em vez de guiar a implementação. Identificado numa revisão de processo com o usuário logo após este checkpoint ser fechado. A decisão tomada foi não refazer os checkpoints 5 e 6 (a cobertura de teste já é real, contra infraestrutura de verdade, e passa) -- mas a partir do checkpoint 7 o teste volta a vir primeiro, inclusive para infraestrutura declarativa como esta.
+
+\section{Resumo do que ficou pronto}
+
+\begin{itemize}
+    \item Grafana (\texttt{grafana-oss:13.0.2}) real, provisionado inteiramente como código.
+    \item Datasource InfluxDB (Flux) com credenciais compartilhadas via variável de ambiente, sem duplicação de segredo.
+    \item Dashboard de 7 painéis, gerado por script a partir de uma lista declarativa, cobrindo os 20 sinais de telemetria.
+    \item Validação de ponta a ponta confirmada: dado escrito no InfluxDB é visível através da própria API de consulta do Grafana.
+\end{itemize}
+
+\section{Próximos passos}
+
+Checkpoint 7: dashboard Grafana ao vivo, usando Grafana Live + o plugin de datasource MQTT, pro caminho de visualização em tempo real (sem depender do InfluxDB) definido na arquitetura original do projeto.
+
+\end{document}

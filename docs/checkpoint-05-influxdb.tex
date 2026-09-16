@@ -1,0 +1,150 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{parskip}
+\usepackage{titlesec}
+
+\hypersetup{colorlinks=true, linkcolor=blue!50!black, urlcolor=blue!50!black, citecolor=blue!50!black}
+
+\definecolor{codebg}{RGB}{245,245,245}
+\definecolor{codegray}{RGB}{110,110,110}
+\definecolor{codegreen}{RGB}{0,110,0}
+\definecolor{codeblue}{RGB}{30,80,180}
+
+\lstdefinestyle{code}{
+    backgroundcolor=\color{codebg}, basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{codeblue}, commentstyle=\color{codegray}\itshape,
+    stringstyle=\color{codegreen}, breaklines=true, breakatwhitespace=false,
+    frame=single, rulecolor=\color{black!15}, numbers=left,
+    numberstyle=\tiny\color{codegray}, xleftmargin=1.8em, framexleftmargin=1.5em,
+    showstringspaces=false, tabsize=2,
+    literate=
+      {á}{{\'a}}1 {à}{{\`a}}1 {ã}{{\~a}}1 {â}{{\^a}}1
+      {é}{{\'e}}1 {ê}{{\^e}}1 {í}{{\'i}}1
+      {ó}{{\'o}}1 {õ}{{\~o}}1 {ô}{{\^o}}1 {ú}{{\'u}}1
+      {ç}{{\c c}}1 {Á}{{\'A}}1 {É}{{\'E}}1 {Í}{{\'I}}1
+      {Ó}{{\'O}}1 {Ú}{{\'U}}1 {Ã}{{\~A}}1 {Õ}{{\~O}}1
+      {Ç}{{\c C}}1,
+}
+\lstset{style=code}
+
+\titleformat{\section}{\normalfont\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{1em}{}
+
+\sloppy
+
+\title{\textbf{TelemetriaMqtt v2 --- Checkpoint 5} \\[4pt]
+\large Schema e setup do InfluxDB}
+\author{Projeto de Telemetria FSAE}
+\date{16 de setembro de 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent Este documento detalha o quinto checkpoint do projeto: colocar o InfluxDB no ar como container Docker, confirmar de fato a suposição de versão (2.x) feita no checkpoint 4, e validar contra um banco real -- não mais mockado -- a escrita e a leitura de pontos de telemetria.
+\end{abstract}
+
+\tableofcontents
+
+\section{Contexto e objetivo}
+
+No checkpoint 4, o script de ingestão foi escrito e testado com um \texttt{write\_api} \textbf{mockado} (\texttt{unittest.mock.MagicMock}), porque o InfluxDB ainda não existia como serviço. A suposição de que o banco seria InfluxDB 2.x (baseada na terminologia de "bucket" usada nos slides do TCC antigo) ficou registrada no \texttt{SCOPE.md} como pendente de confirmação. Este checkpoint resolve essa pendência: coloca um InfluxDB 2.x real no ar, e valida contra ele.
+
+\section{Estrutura adicionada}
+
+\begin{lstlisting}[language=bash,caption={Arquivos novos/alterados}]
+infra/
+  docker-compose.yml        (+ serviço influxdb)
+  .env.example               (+ variáveis do InfluxDB)
+  requirements-test.txt      (+ influxdb-client)
+  tests/
+    conftest.py               (+ fixture ensure_env_file, influxdb_instance)
+    test_influxdb.py           (novo)
+    test_docker_compose.py     (+ teste do serviço influxdb)
+    test_end_to_end.py         (+ teste do pipeline completo)
+\end{lstlisting}
+
+\subsection{Serviço no docker-compose.yml}
+
+\begin{lstlisting}[language=yaml,caption={Trecho de infra/docker-compose.yml}]
+influxdb:
+  image: influxdb:2
+  environment:
+    DOCKER_INFLUXDB_INIT_MODE: setup
+    DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUXDB_INIT_USERNAME:-admin}
+    DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_INIT_PASSWORD:?...}
+    DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_INIT_ORG:-fsae}
+    DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_INIT_BUCKET:-telemetria}
+    DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN:?...}
+  volumes:
+    - influxdb-data:/var/lib/influxdb2
+\end{lstlisting}
+
+A imagem oficial faz o setup inicial (usuário, organização, bucket, token de admin) sozinha, lendo variáveis de ambiente, na primeira subida com o volume de dados vazio.
+
+\subsection{Credenciais via infra/.env}
+
+Seguindo o mesmo padrão já usado para o \texttt{passwd} do Mosquitto: nenhuma credencial real em arquivo versionado. \texttt{infra/.env} (gitignored) guarda usuário, senha, organização, bucket e token; \texttt{infra/.env.example} é o template versionado. Uma \textit{fixture} \texttt{autouse} do pytest (\texttt{ensure\_env\_file}) garante que \texttt{.env} existe antes de qualquer teste, gerando valores aleatórios se ele não existir -- e nunca sobrescrevendo um \texttt{.env} real que o desenvolvedor já tenha configurado.
+
+\subsection{Schema}
+
+\begin{itemize}
+    \item \textbf{Organização}: \texttt{fsae}. \textbf{Bucket}: \texttt{telemetria}.
+    \item \textbf{Retenção}: infinita (sem limite configurado) -- decisão consciente, já que o objetivo é comparar treinos e estudar tendências ao longo de uma temporada inteira, não só o evento mais recente.
+    \item \textbf{Measurement}: \texttt{telemetry}, já definido no checkpoint 4 (\texttt{backend/ingestion/transform.py}) -- um ponto por mensagem MQTT, os 20 sinais como campos.
+\end{itemize}
+
+\section{Testes}
+
+Quatro testes cobrem este checkpoint especificamente (mais dois de checkpoints anteriores, estendidos):
+
+\begin{enumerate}[label=\textbf{Teste \arabic*}]
+    \item \texttt{test\_point\_written\_via\_production\_writer\_is\_queryable} -- escreve um ponto usando o \texttt{make\_influx\_writer} de produção (checkpoint 4) contra um InfluxDB efêmero real, e confirma via consulta Flux que o valor volta certo.
+    \item \texttt{test\_multiple\_fields\_of\_same\_point\_are\_all\_queryable} -- confirma que múltiplos campos do mesmo ponto (\texttt{engineTemp}, \texttt{airTemp}) são gravados e consultados corretamente juntos.
+    \item \texttt{test\_docker\_compose\_up\_starts\_a\_working\_influxdb} -- o \texttt{docker-compose.yml} real (não uma cópia da config) sobe um InfluxDB que responde no endpoint de saúde.
+    \item \texttt{test\_full\_pipeline\_mock\_publisher\_to\_real\_influxdb} -- fecha o ciclo do caminho histórico inteiro: mock publisher $\to$ broker real $\to$ ingestão $\to$ InfluxDB real $\to$ consulta de volta, nenhum elo simulado.
+\end{enumerate}
+
+\subsection{Resultado da execução}
+
+\begin{lstlisting}[caption={Saída real de pytest -v (arquivos deste checkpoint)}]
+test_influxdb.py::test_point_written_via_production_writer_is_queryable PASSED
+test_influxdb.py::test_multiple_fields_of_same_point_are_all_queryable PASSED
+test_docker_compose.py::test_docker_compose_up_starts_a_working_influxdb PASSED
+test_end_to_end.py::test_full_pipeline_mock_publisher_to_real_influxdb PASSED
+\end{lstlisting}
+
+\section{Descoberta durante a validação manual}
+
+Depois de gerar um novo \texttt{infra/.env} (com um token de admin novo) e rodar \texttt{docker compose up}, uma tentativa de escrita real falhou com \texttt{401 Unauthorized}. Causa: o InfluxDB já tinha sido inicializado antes, numa sessão de teste anterior, e seu volume de dados (\texttt{influxdb-data}) persistiu entre execuções -- a imagem oficial só roda o processo de setup (que lê as variáveis de ambiente) na \textbf{primeira} subida com o volume vazio. Trocar \texttt{.env} depois não tem efeito nenhum até o volume ser apagado.
+
+A correção foi \texttt{docker compose down -v} (remove os volumes) seguido de \texttt{up} novamente, forçando uma reinicialização completa. Esse comportamento foi documentado no \texttt{SCOPE.md} e no \texttt{CLAUDE.md} como nota operacional, pra não ser redescoberto por acidente mais pra frente.
+
+\section{Nota sobre metodologia}
+
+Diferente dos checkpoints anteriores, neste a implementação (serviço no \texttt{docker-compose.yml}, credenciais) foi escrita antes dos testes automatizados -- os testes vieram depois de uma validação manual já confirmar que tudo funcionava. Essa inversão de ordem foi identificada e discutida com o usuário após o checkpoint 6; a partir do checkpoint 7 o processo volta a ser teste-primeiro, inclusive para infraestrutura declarativa. A cobertura de testes deste checkpoint continua válida (roda contra infraestrutura real, não é simulada) -- só a ordem em que foi escrita que não seguiu TDD estrito.
+
+\section{Resumo do que ficou pronto}
+
+\begin{itemize}
+    \item InfluxDB 2.x real, container Docker, setup automático via variáveis de ambiente.
+    \item Credenciais nunca em arquivo versionado -- mesmo padrão do Mosquitto.
+    \item Schema definido e documentado: organização, bucket, retenção infinita, measurement.
+    \item Suposição de design do checkpoint 4 (escrita/leitura via \texttt{influxdb-client}) validada contra banco real, não mais mockada.
+    \item Descoberta operacional sobre o comportamento de inicialização do InfluxDB documentada.
+\end{itemize}
+
+\section{Próximos passos}
+
+Checkpoint 6: dashboards Grafana usando este InfluxDB como fonte de dados para o caminho histórico da arquitetura.
+
+\end{document}

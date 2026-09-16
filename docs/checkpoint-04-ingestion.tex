@@ -40,6 +40,13 @@
     framexleftmargin=1.5em,
     showstringspaces=false,
     tabsize=2,
+    literate=
+      {á}{{\'a}}1 {à}{{\`a}}1 {ã}{{\~a}}1 {â}{{\^a}}1
+      {é}{{\'e}}1 {ê}{{\^e}}1 {í}{{\'i}}1
+      {ó}{{\'o}}1 {õ}{{\~o}}1 {ô}{{\^o}}1 {ú}{{\'u}}1
+      {ç}{{\c c}}1 {Á}{{\'A}}1 {É}{{\'E}}1 {Í}{{\'I}}1
+      {Ó}{{\'O}}1 {Ú}{{\'U}}1 {Ã}{{\~A}}1 {Õ}{{\~O}}1
+      {Ç}{{\c C}}1,
 }
 \lstset{style=code}
 
@@ -88,7 +95,7 @@ A solução adotada: o \textbf{timestamp do ponto gravado no InfluxDB é o horá
 backend/
   ingestion/
     __init__.py
-    transform.py       # logica pura: payload -> InfluxPoint
+    transform.py       # lógica pura: payload -> InfluxPoint
     ingest.py           # callback MQTT: parseia e chama o writer
     influx_writer.py    # wiring com o SDK oficial do InfluxDB
     __main__.py          # ponto de entrada de linha de comando

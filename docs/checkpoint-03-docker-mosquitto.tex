@@ -2,7 +2,6 @@
 
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
-\usepackage[brazil]{babel}
 \usepackage{geometry}
 \geometry{margin=2.5cm}
 \usepackage{listings}
@@ -41,6 +40,13 @@
     framexleftmargin=1.5em,
     showstringspaces=false,
     tabsize=2,
+    literate=
+      {á}{{\'a}}1 {à}{{\`a}}1 {ã}{{\~a}}1 {â}{{\^a}}1
+      {é}{{\'e}}1 {ê}{{\^e}}1 {í}{{\'i}}1
+      {ó}{{\'o}}1 {õ}{{\~o}}1 {ô}{{\^o}}1 {ú}{{\'u}}1
+      {ç}{{\c c}}1 {Á}{{\'A}}1 {É}{{\'E}}1 {Í}{{\'I}}1
+      {Ó}{{\'O}}1 {Ú}{{\'U}}1 {Ã}{{\~A}}1 {Õ}{{\~O}}1
+      {Ç}{{\c C}}1,
 }
 \lstset{style=code}
 
@@ -159,13 +165,13 @@ Os pontos relevantes desta configuração:
 O arquivo \texttt{acl.conf} define exatamente o que cada usuário autenticado pode fazer:
 
 \begin{lstlisting}[language=bash,caption={infra/mosquitto/config/acl.conf}]
-# Dispositivos de telemetria (ESP32 real ou o mock publisher): so podem
-# publicar no proprio topico, nunca ler -- nem esse nem qualquer outro.
+# Dispositivos de telemetria (ESP32 real ou o mock publisher): só podem
+# publicar no próprio tópico, nunca ler -- nem esse nem qualquer outro.
 user esp32_telemetria
 topic write telemetria/esp32/data
 
-# Consumidores (script de ingestao, Grafana Live via plugin MQTT): so
-# podem ler o topico de telemetria, nunca publicar.
+# Consumidores (script de ingestao, Grafana Live via plugin MQTT): só
+# podem ler o tópico de telemetria, nunca publicar.
 user telemetria_reader
 topic read telemetria/esp32/data
 \end{lstlisting}
@@ -278,7 +284,7 @@ A correção foi adicionar uma opção de linha de comando \texttt{--no-tls} ao 
 \begin{lstlisting}[language=Python,caption={Trecho da correção em mock\_publisher/\_\_main\_\_.py}]
 parser.add_argument(
     "--no-tls", action="store_true",
-    help="desliga TLS (broker de dev local nao usa TLS; producao usa)",
+    help="desliga TLS (broker de dev local não usa TLS; produção usa)",
 )
 ...
 if not args.no_tls:

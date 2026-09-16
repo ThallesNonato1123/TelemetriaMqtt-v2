@@ -30,6 +30,21 @@ Capturar sinais do barramento CAN do carro (RPM, temperaturas, correntes de PDM,
 
 Dois caminhos deliberadamente separados: o painel ao vivo não depende do InfluxDB (elimina o limite de refresh de ~5s do polling), e o caminho histórico fica isolado para análise pós-evento.
 
+## Stack tecnológico
+
+Todas as escolhas de tecnologia feitas até agora, num lugar só (ver `CLAUDE.md` para a regra de manter isso atualizado):
+
+| Camada | Escolha |
+|---|---|
+| Firmware | PlatformIO — env `esp32dev` (Arduino framework, board ESP32 DevKit) pra produção; env `native` (Unity) pra testes unitários sem hardware |
+| Scripts de backend | Python 3, `pytest` (testes), `paho-mqtt` (cliente MQTT) — decidido no checkpoint 2 (mock publisher); vale como padrão pro script de ingestão (checkpoint 4) também |
+| Broker MQTT | Mosquitto, self-hosted, TLS + ACL por dispositivo |
+| Armazenamento | InfluxDB |
+| Visualização | Grafana — datasource InfluxDB (caminho histórico) + plugin `grafana-mqtt-datasource` (open source) via Grafana Live (caminho ao vivo) |
+| Infra / VPS | Oracle Cloud Free Tier (plano B: Hetzner CX ou Contabo) |
+| Hardware | ESP32 DevKit V1 (WROOM-32) + transceiver CAN SN65HVD230 |
+| Controle de versão | git, sem remote configurado (repositório só local por enquanto) |
+
 ## Fonte dos dados: PDM (CAN Output)
 
 O carro usa um **AIM PDM32** (Power Distribution Module) como origem dos quadros CAN. Conforme a seção 22 ("CAN Output configuration", p. 56) do [manual oficial do PDM32](https://www.aim-sportline.com/download/doc/eng/pdm32-pdm08/PDM32_user_guide_eng.pdf):
@@ -126,5 +141,5 @@ Pra desenvolver e testar o pipeline de backend (broker → ingestão → InfluxD
 ## Fora de escopo por enquanto
 
 - Reaproveitamento de código do repositório antigo.
-- Definição de qual linguagem exata para o script de ingestão (Python vs Node.js) — a decidir na etapa de implementação.
+- Confirmação final da linguagem do script de ingestão (Python é o padrão de fato após o checkpoint 2, mas só fecha de verdade no checkpoint 4).
 - Metodologia de desenvolvimento — definida em `CLAUDE.md` (checkpoints, TDD, forma de revisão), não neste documento.

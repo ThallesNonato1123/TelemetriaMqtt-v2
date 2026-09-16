@@ -51,7 +51,7 @@ pio test -e native       # testes unitários (Unity) sem hardware
 
 ## Checkpoints (ordem de desenvolvimento)
 
-1. Scaffolding do repo — estrutura de pastas, PlatformIO, `.gitignore`, `secrets.h.example`
+1. Scaffolding do repo — estrutura de pastas, PlatformIO, `.gitignore`, `secrets.h.example`, **remote GitHub, CI e esquema de releases** (feito retroativamente neste projeto, depois do checkpoint 4 — ver adendo em `docs/checkpoint-01-scaffolding.pdf`; em projetos futuros, isso entra no escopo do checkpoint 1 desde o início, não depois)
 2. Script mock de publicação MQTT (simula o ESP32, sem hardware — ver seção "Simulador de desenvolvimento" no SCOPE.md)
 3. `docker-compose` local + configuração do broker Mosquitto (credenciais/ACL por dispositivo; sem TLS em dev local — ver seção "Docker" no SCOPE.md)
 4. Script de ingestão (MQTT → InfluxDB)

@@ -2,7 +2,6 @@
 
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
-\usepackage[brazil]{babel}
 \usepackage{geometry}
 \geometry{margin=2.5cm}
 \usepackage{listings}
@@ -50,16 +49,16 @@
 \sloppy
 
 \title{\textbf{TelemetriaMqtt v2 --- Checkpoint 1} \\[4pt]
-\large Scaffolding do repositório: firmware PlatformIO, template de credenciais e harness de testes}
+\large Scaffolding do repositório: firmware PlatformIO, template de credenciais, harness de testes, publicação no GitHub e CI}
 \author{Projeto de Telemetria FSAE}
-\date{16 de setembro de 2026}
+\date{16 de setembro de 2026 (atualizado)}
 
 \begin{document}
 
 \maketitle
 
 \begin{abstract}
-\noindent Este documento detalha o primeiro checkpoint do projeto de reconstrução do sistema de telemetria da equipe: a criação da estrutura inicial do repositório, com foco no firmware do ESP32. O checkpoint estabelece o projeto PlatformIO com dois ambientes de build (um para o hardware real, outro para testes sem hardware), o template de credenciais que nunca é versionado, e a validação de que toda a cadeia de ferramentas (compilação e testes) funciona de ponta a ponta antes de qualquer lógica de negócio ser escrita.
+\noindent Este documento detalha o primeiro checkpoint do projeto de reconstrução do sistema de telemetria da equipe: a criação da estrutura inicial do repositório, com foco no firmware do ESP32. O checkpoint estabelece o projeto PlatformIO com dois ambientes de build (um para o hardware real, outro para testes sem hardware), o template de credenciais que nunca é versionado, e a validação de que toda a cadeia de ferramentas (compilação e testes) funciona de ponta a ponta antes de qualquer lógica de negócio ser escrita. Inclui também, como adendo (ver Seção~\ref{sec:ci-releases}), a publicação do repositório no GitHub e a configuração de integração contínua (CI) --- trabalho que, em retrospecto, pertence ao escopo de scaffolding deste checkpoint, mas que só foi executado depois do checkpoint 4, ao ser identificada essa lacuna.
 \end{abstract}
 
 \tableofcontents
@@ -253,6 +252,49 @@ $ git check-ignore -v firmware/.pio/build firmware/include/secrets.h
 
 Ambos os caminhos são corretamente ignorados pela regra correspondente do arquivo.
 
+\section{Adendo: publicação no GitHub, CI e releases}
+\label{sec:ci-releases}
+
+Esta seção foi adicionada depois do checkpoint 4, quando ficou claro que scaffolding de repositório deveria ter incluído, desde o primeiro commit, um remote público, integração contínua e um esquema de releases --- não só a estrutura de pastas e o build local. Documentado aqui, e não num documento à parte, porque conceitualmente \textbf{pertence ao escopo deste checkpoint}, mesmo tendo sido implementado depois. O \texttt{CLAUDE.md} foi atualizado para refletir esse escopo corrigido nos próximos projetos.
+
+\subsection{Por que isso deveria ter sido feito no checkpoint 1}
+
+Scaffolding de repositório não é só "o código compila localmente" --- é toda a base operacional que os checkpoints seguintes vão depender. Deixar o remote e o CI para depois significa que boa parte do projeto (checkpoints 1 a 4) foi desenvolvida sem nenhuma rede de proteção automatizada: nenhum push disparava testes, não havia histórico de builds, e o repositório só existia numa única máquina. O trabalho de auditoria retroativa (verificar se os testes cobriam o que foi implementado, revisado separadamente) só foi necessário, em parte, porque não havia CI cobrando isso a cada commit desde o início.
+
+\subsection{O que foi feito}
+
+\begin{itemize}
+    \item \textbf{Publicação do repositório}: GitHub, público, em \url{https://github.com/ThallesNonato1123/TelemetriaMqtt-v2}. Antes do primeiro push, foi feita uma varredura em todo o histórico de commits por credenciais acidentalmente versionadas (\texttt{git log -p --all | grep ...}) --- encontradas apenas senhas de desenvolvimento descartáveis em exemplos de comando na documentação, sem risco real, trocadas por um placeholder genérico por higiene.
+    \item \textbf{Tags semânticas retroativas}: uma tag por checkpoint fechado (\texttt{v0.1.0} a \texttt{v0.4.1}), apontando para os commits que efetivamente fecharam cada etapa.
+    \item \textbf{CI} (\texttt{.github/workflows/ci.yml}): três jobs paralelos no GitHub Actions, um por suíte de teste independente do projeto (firmware nativo via PlatformIO, backend via pytest, infra via pytest subindo containers Mosquitto efêmeros), rodando a cada push e pull request.
+\end{itemize}
+
+\begin{lstlisting}[language=yaml,caption={Trecho de .github/workflows/ci.yml}]
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+      - run: pip install platformio
+      - working-directory: firmware
+        run: pio test -e native
+  backend: ...
+  infra: ...
+\end{lstlisting}
+
+Os runners \texttt{ubuntu-latest} do GitHub Actions já vêm com Docker instalado e o daemon ativo por padrão --- por isso o job de \texttt{infra/} (que sobe containers Mosquitto reais durante os testes, como descrito no documento do checkpoint 3) funciona sem nenhuma configuração adicional.
+
+\subsection{Validação: rodando de verdade}
+
+Depois do primeiro push com o workflow de CI, a execução foi acompanhada em tempo real (\texttt{gh run watch}) até completar, confirmando que as três jobs passam de fato no ambiente do GitHub Actions, não só localmente:
+
+\begin{lstlisting}[caption={Resultado real do primeiro run de CI}]
+✓ Firmware (testes nativos, sem hardware) in 19s
+✓ Backend (mock publisher + ingestão) in 12s
+✓ Infra (Mosquitto ACL/auth, via Docker) in 21s
+\end{lstlisting}
+
 \section{Resumo do que ficou pronto}
 
 \begin{itemize}
@@ -261,6 +303,9 @@ Ambos os caminhos são corretamente ignorados pela regra correspondente do arqui
     \item Template de credenciais (\texttt{secrets.h.example}) versionado; o arquivo real nunca chega a ser rastreado pelo Git.
     \item Harness de testes unitários (Unity) funcionando ponta a ponta, pronto para receber testes de lógica real.
     \item \texttt{.gitignore} validado na prática, não apenas escrito.
+    \item \textbf{(Adendo)} Repositório público no GitHub, com histórico auditado antes da publicação.
+    \item \textbf{(Adendo)} CI rodando as três suítes de teste do projeto a cada push, validado com uma execução real.
+    \item \textbf{(Adendo)} Esquema de releases (tag semântica por checkpoint) estabelecido e aplicado retroativamente.
 \end{itemize}
 
 \section{Próximos passos}

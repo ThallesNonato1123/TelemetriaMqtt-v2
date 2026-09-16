@@ -14,6 +14,14 @@ node_modules/
 # Mosquitto — credenciais reais, nunca versionar (só passwd, não os .conf)
 infra/mosquitto/config/passwd
 
+# LaTeX (docs/) — arquivos auxiliares de compilação, só o .tex/.pdf são versionados
+docs/*.aux
+docs/*.log
+docs/*.out
+docs/*.toc
+docs/*.fls
+docs/*.fdb_latexmk
+
 # OS / editor
 .DS_Store
 *.swp

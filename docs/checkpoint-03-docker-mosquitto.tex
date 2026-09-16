@@ -261,10 +261,10 @@ Além dos testes automatizados, o comportamento completo do sistema foi validado
 
 \begin{lstlisting}[language=bash,caption={Comando de validação manual}]
 docker exec telemetria-mosquitto mosquitto_sub -h localhost -p 1883 \
-  -u telemetria_reader -P dev-reader-pw -t telemetria/esp32/data -C 3 &
+  -u telemetria_reader -P <senha-local-de-dev> -t telemetria/esp32/data -C 3 &
 
 python -m mock_publisher --host 127.0.0.1 --port 1883 --no-tls \
-  --username esp32_telemetria --password dev-publisher-pw --duration 2
+  --username esp32_telemetria --password <senha-local-de-dev> --duration 2
 \end{lstlisting}
 
 O assinante recebeu corretamente três mensagens JSON publicadas pelo script mock, confirmando que autenticação, autorização e o fluxo de dados completo funcionam de ponta a ponta.

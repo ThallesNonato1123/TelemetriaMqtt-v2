@@ -231,10 +231,10 @@ Com o broker MQTT real (checkpoint 3) disponível, foi possível validar boa par
 docker compose up -d   # sobe o broker real (infra/)
 
 python -m ingestion --host 127.0.0.1 --port 1883 --no-tls \
-  --username telemetria_reader --password dev-reader-pw --dry-run &
+  --username telemetria_reader --password <senha-local-de-dev> --dry-run &
 
 python -m mock_publisher --host 127.0.0.1 --port 1883 --no-tls \
-  --username esp32_telemetria --password dev-publisher-pw --duration 1.5
+  --username esp32_telemetria --password <senha-local-de-dev> --duration 1.5
 \end{lstlisting}
 
 \begin{lstlisting}[caption={Trecho da saída real observada}]

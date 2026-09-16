@@ -11,6 +11,41 @@ Instruções de trabalho para este repositório. Ver `SCOPE.md` para as decisõe
 - **Revisão por checkpoint**: parar ao final de cada checkpoint (ver lista abaixo) e aguardar aprovação explícita antes de seguir para o próximo. Não emendar múltiplos checkpoints em uma sequência sem parar.
 - **Forma de revisão**: o usuário revisa tanto lendo o código/diff quanto rodando/testando na própria máquina. Ao final de cada checkpoint, resumir o que foi feito, como rodar os testes, e como testar manualmente (se aplicável).
 
+## Comandos
+
+Repo tem três áreas independentes, cada uma com seu próprio ambiente de teste.
+
+### `backend/` — mock publisher (Python)
+
+```bash
+cd backend
+python -m venv .venv && source .venv/bin/activate   # primeira vez
+pip install -r requirements.txt
+pytest                                               # todos os testes
+pytest tests/test_signal_generator.py -k nome_do_teste  # um teste específico
+python -m mock_publisher --dry-run                   # roda o publisher sem broker (imprime no terminal)
+```
+
+### `infra/` — testes de ACL do Mosquitto (Python + Docker)
+
+```bash
+cd infra
+pip install -r requirements-test.txt
+pytest                                        # sobe um Mosquitto efêmero (Docker) com o acl.conf real e testa as regras
+docker compose up -d                          # broker local persistente (porta 1883, sem TLS)
+./mosquitto/generate_passwd.sh <username>     # cria/atualiza infra/mosquitto/config/passwd (gitignored, pede senha interativamente)
+```
+
+Os testes de ACL exigem Docker rodando (sobem containers `eclipse-mosquitto:2` de verdade, não mockam o broker).
+
+### `firmware/` — ESP32 (PlatformIO)
+
+```bash
+cd firmware
+pio run -e esp32dev     # compila para o ESP32 (upload requer hardware conectado)
+pio test -e native       # testes unitários (Unity) sem hardware
+```
+
 ## Checkpoints (ordem de desenvolvimento)
 
 1. Scaffolding do repo — estrutura de pastas, PlatformIO, `.gitignore`, `secrets.h.example`
@@ -27,8 +62,13 @@ Instruções de trabalho para este repositório. Ver `SCOPE.md` para as decisõe
 
 Cada item da lista é um checkpoint independente: implementar, testar, resumir, parar para revisão.
 
+## Documentação detalhada por checkpoint
+
+Quando o usuário pedir uma explicação mais aprofundada de um checkpoint (ex: em PDF), o material vai em `docs/checkpoint-NN-nome-curto.tex` (+ `.pdf` compilado), versionado junto com o resto do projeto — não solto fora do repositório. `SCOPE.md`/`CLAUDE.md` continuam sendo a referência rápida; os documentos em `docs/` são para leitura aprofundada sob demanda, não mantidos automaticamente a cada checkpoint.
+
 ## Referências
 
 - Decisões técnicas e arquitetura: `SCOPE.md`
 - Protocolo CAN (IDs, frequências, byte layout): seção "Plano de payloads" do `SCOPE.md`
+- Documentação aprofundada por checkpoint (sob demanda): `docs/`
 - Projeto antigo (histórico, não reaproveitar código): `~/Desktop/TelemetriaMqtt`

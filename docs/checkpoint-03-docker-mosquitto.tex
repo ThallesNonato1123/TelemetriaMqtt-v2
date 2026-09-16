@@ -1,0 +1,305 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{parskip}
+\usepackage{titlesec}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!50!black,
+    citecolor=blue!50!black,
+}
+
+\definecolor{codebg}{RGB}{245,245,245}
+\definecolor{codegray}{RGB}{110,110,110}
+\definecolor{codegreen}{RGB}{0,110,0}
+\definecolor{codeblue}{RGB}{30,80,180}
+
+\lstdefinestyle{code}{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{codeblue},
+    commentstyle=\color{codegray}\itshape,
+    stringstyle=\color{codegreen},
+    breaklines=true,
+    breakatwhitespace=false,
+    frame=single,
+    rulecolor=\color{black!15},
+    numbers=left,
+    numberstyle=\tiny\color{codegray},
+    xleftmargin=1.8em,
+    framexleftmargin=1.5em,
+    showstringspaces=false,
+    tabsize=2,
+}
+\lstset{style=code}
+
+\titleformat{\section}{\normalfont\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{1em}{}
+
+\title{\textbf{TelemetriaMqtt v2 --- Checkpoint 3} \\[4pt]
+\large Ambiente Docker local e broker MQTT (Mosquitto) com autenticação e controle de acesso}
+\author{Projeto de Telemetria FSAE}
+\date{16 de setembro de 2026}
+
+\sloppy
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent Este documento detalha o terceiro checkpoint do projeto de reconstrução do sistema de telemetria da equipe: a criação de um ambiente de desenvolvimento local baseado em Docker e a configuração de um broker MQTT (Eclipse Mosquitto) com autenticação por usuário e controle de acesso por tópico (ACL). O checkpoint inclui também uma suíte de testes de integração automatizados que validam o comportamento real do broker, e uma correção em um componente do checkpoint anterior, descoberta durante a validação manual ponta a ponta.
+\end{abstract}
+
+\tableofcontents
+
+\section{Contexto e objetivo}
+
+O projeto está sendo reconstruído do zero a partir do TCC anterior da equipe, seguindo uma metodologia de checkpoints documentada no arquivo \texttt{CLAUDE.md} do repositório: cada etapa é implementada com testes antes ou junto do código (TDD), validada rodando de verdade (não só lendo o código), e só avança para a próxima etapa após revisão explícita.
+
+Uma decisão de arquitetura anterior (documentada no \texttt{SCOPE.md}, tomada através de uma sessão de perguntas e respostas dedicada) definiu que \textbf{todos os serviços de backend} do projeto --- broker MQTT, banco de dados de série temporal (InfluxDB), painel de visualização (Grafana) e o script de ingestão --- seriam executados como \textbf{containers Docker}, tanto em desenvolvimento local quanto na VPS de produção. As razões principais foram:
+
+\begin{itemize}
+    \item \textbf{Reprodutibilidade}: o mesmo ambiente roda idêntico no computador do desenvolvedor e no servidor, eliminando divergências de configuração.
+    \item \textbf{Testabilidade}: cada checkpoint de backend pode ser validado subindo os containers localmente e testando o comportamento real, sem precisar de acesso à VPS a cada iteração.
+    \item \textbf{Compatibilidade}: todas as imagens oficiais utilizadas (\texttt{eclipse-mosquitto}, \texttt{influxdb}, \texttt{grafana/grafana}) possuem suporte confirmado para arquitetura ARM64, compatível com a VPS gratuita escolhida (Oracle Cloud Free Tier).
+\end{itemize}
+
+O checkpoint 3 é a primeira aplicação prática dessa decisão: colocar o broker MQTT no ar, localmente, com autenticação e controle de acesso adequados --- sem ainda envolver TLS, que fica reservado para quando o ambiente de produção (VPS) entrar em cena, através de um reverse proxy (Traefik).
+
+\section{Por que um broker MQTT com autenticação}
+
+Um broker MQTT é o intermediário entre quem publica dados (no caso final, o firmware do ESP32 instalado no carro) e quem consome esses dados (o painel ao vivo no Grafana e o script que grava o histórico no InfluxDB). Sem autenticação, qualquer dispositivo na mesma rede poderia publicar dados falsos de telemetria ou ler os dados reais do carro.
+
+O projeto anterior da equipe (TCC original) cometeu um erro concreto nesse sentido: as credenciais do broker MQTT (um serviço gerenciado, HiveMQ Cloud) ficaram hardcoded em texto plano no firmware, e o repositório com esse código foi publicado publicamente no GitHub --- expondo essas credenciais. Esse incidente foi identificado durante o levantamento de requisitos deste novo projeto e motivou duas decisões:
+
+\begin{enumerate}
+    \item Nenhuma credencial é armazenada em arquivo versionado pelo Git, em nenhuma camada do projeto (firmware ou infraestrutura).
+    \item O broker passa a ser auto-hospedado (self-hosted), dentro do controle da própria equipe, em vez de depender de um serviço de terceiros.
+\end{enumerate}
+
+\section{Estrutura de arquivos criada}
+
+O checkpoint adicionou o diretório \texttt{infra/} ao repositório, com a seguinte estrutura:
+
+\begin{lstlisting}[language=bash,caption={Estrutura do diretório infra/}]
+infra/
+  docker-compose.yml
+  mosquitto/
+    generate_passwd.sh
+    config/
+      mosquitto.conf
+      acl.conf
+      passwd            (gerado localmente, NUNCA versionado)
+  tests/
+    conftest.py
+    test_mosquitto_acl.py
+  requirements-test.txt
+  pytest.ini
+\end{lstlisting}
+
+\subsection{docker-compose.yml}
+
+Define o serviço do broker como um container Docker, mapeando a porta padrão do MQTT (1883) e montando os arquivos de configuração como volume somente-leitura:
+
+\begin{lstlisting}[language=yaml,caption={infra/docker-compose.yml}]
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: telemetria-mosquitto
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config:ro
+      - mosquitto-data:/mosquitto/data
+    restart: unless-stopped
+
+volumes:
+  mosquitto-data:
+\end{lstlisting}
+
+Note-se que não há configuração de TLS aqui --- por decisão de arquitetura, o ambiente de desenvolvimento local roda sem criptografia de transporte, já que a rede Docker do computador não é exposta à internet. A criptografia real (via Let's Encrypt, gerenciada por um reverse proxy Traefik) só entra em cena no ambiente de produção da VPS, em um checkpoint futuro.
+
+\subsection{mosquitto.conf}
+
+\begin{lstlisting}[language=bash,caption={infra/mosquitto/config/mosquitto.conf}]
+listener 1883
+allow_anonymous false
+password_file /mosquitto/config/passwd
+acl_file /mosquitto/config/acl.conf
+
+persistence true
+persistence_location /mosquitto/data/
+log_dest stdout
+\end{lstlisting}
+
+Os pontos relevantes desta configuração:
+
+\begin{itemize}
+    \item \texttt{allow\_anonymous false} --- desativa qualquer conexão sem usuário/senha. Esse é o oposto do comportamento padrão do Mosquitto, que por conveniência de testes permite conexões anônimas.
+    \item \texttt{password\_file} --- aponta para o arquivo de senhas com hash (nunca em texto plano), gerado por uma ferramenta própria do Mosquitto, explicada na Seção~\ref{sec:credenciais}.
+    \item \texttt{acl\_file} --- aponta para o arquivo de controle de acesso por tópico, explicado na Seção~\ref{sec:acl}.
+    \item \texttt{log\_dest stdout} --- os logs vão para a saída padrão do container, visíveis via \texttt{docker compose logs}, sem precisar de volume adicional para arquivo de log.
+\end{itemize}
+
+\subsection{Controle de acesso por tópico (ACL)}
+\label{sec:acl}
+
+O arquivo \texttt{acl.conf} define exatamente o que cada usuário autenticado pode fazer:
+
+\begin{lstlisting}[language=bash,caption={infra/mosquitto/config/acl.conf}]
+# Dispositivos de telemetria (ESP32 real ou o mock publisher): so podem
+# publicar no proprio topico, nunca ler -- nem esse nem qualquer outro.
+user esp32_telemetria
+topic write telemetria/esp32/data
+
+# Consumidores (script de ingestao, Grafana Live via plugin MQTT): so
+# podem ler o topico de telemetria, nunca publicar.
+user telemetria_reader
+topic read telemetria/esp32/data
+\end{lstlisting}
+
+Foram definidos dois papéis (usuários), seguindo o princípio de menor privilégio --- cada identidade só tem exatamente a permissão de que precisa para sua função, nada além disso:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Usuário} & \textbf{Permissão} & \textbf{Quem usa} \\
+\midrule
+\texttt{esp32\_telemetria} & write-only & Firmware do ESP32 (futuro) e o mock publisher \\
+\texttt{telemetria\_reader} & read-only & Script de ingestão e Grafana Live \\
+\bottomrule
+\end{tabular}
+\caption{Usuários MQTT definidos e seus papéis}
+\end{table}
+
+Nenhum dos dois usuários tem acesso administrativo ao broker. Qualquer combinação usuário/tópico que não apareça explicitamente no arquivo é \textbf{negada por padrão} --- comportamento nativo do Mosquitto quando um arquivo de ACL está configurado.
+
+\subsection{Geração de credenciais}
+\label{sec:credenciais}
+
+As senhas reais nunca são escritas em nenhum arquivo versionado. Em vez disso, o script \texttt{generate\_passwd.sh} usa a própria ferramenta oficial do Mosquitto (\texttt{mosquitto\_passwd}), executada dentro de um container Docker efêmero, para gerar o arquivo de senhas com hash:
+
+\begin{lstlisting}[language=bash,caption={infra/mosquitto/generate\_passwd.sh (resumido)}]
+docker run --rm \
+  -v "$CONFIG_DIR:/mosquitto/config" \
+  eclipse-mosquitto:2 \
+  mosquitto_passwd -b /mosquitto/config/passwd "$USERNAME" "$PASSWORD"
+\end{lstlisting}
+
+Isso evita duas coisas: (1) precisar instalar o Mosquitto localmente só para gerar um hash de senha, e (2) qualquer senha em texto plano tocar o disco fora do prompt interativo do terminal. O arquivo resultante, \texttt{infra/mosquitto/config/passwd}, está listado no \texttt{.gitignore} do projeto.
+
+\subsubsection*{Detalhe prático encontrado durante a execução}
+
+Ao gerar o arquivo de senhas pela primeira vez, o \texttt{mosquitto\_passwd} emitiu avisos sobre permissões do arquivo (recomendando \texttt{chmod 0700} e propriedade do usuário \texttt{root}). Seguir essa recomendação literalmente (\texttt{chmod 0600}) quebrou o broker: como o container roda como um usuário interno chamado \texttt{mosquitto}, diferente do usuário do sistema operacional host que gerou o arquivo, a permissão restritiva impediu o processo dentro do container de sequer abrir o arquivo (erro \textit{"Unable to open pwfile"} nos logs). A permissão foi ajustada para \texttt{0644} (leitura para todos, escrita só para o dono), que funciona corretamente no cenário de bind-mount entre host e container com usuários diferentes. Esse é um exemplo concreto de por que os testes e a validação manual (Seção~\ref{sec:validacao}) são indispensáveis: o comportamento só ficou claro rodando o container de verdade, não apenas lendo a documentação.
+
+\section{Testes de integração automatizados}
+
+Diferente dos testes do checkpoint anterior (que validavam lógica pura em Python, sem depender de infraestrutura externa), este checkpoint exige testar o comportamento real de um serviço externo --- o broker MQTT. A abordagem escolhida foi escrever testes de integração que sobem um Mosquitto \textbf{efêmero e real} (não simulado) para cada execução da suíte de testes, usando exatamente os arquivos de configuração de produção do projeto (\texttt{mosquitto.conf} e \texttt{acl.conf}), mas com um arquivo de senhas descartável, gerado apenas para o teste.
+
+\subsection{Arquitetura da suíte de testes}
+
+O arquivo \texttt{conftest.py} define uma \textit{fixture} do pytest que:
+
+\begin{enumerate}
+    \item Copia a configuração real do projeto para um diretório temporário.
+    \item Gera um arquivo de senhas de teste com os mesmos nomes de usuário reais (\texttt{esp32\_telemetria}, \texttt{telemetria\_reader}), mas senhas descartáveis.
+    \item Escolhe uma porta TCP livre no sistema (evitando conflito com um broker de desenvolvimento que porventura já esteja rodando).
+    \item Sobe um container Docker efêmero do Mosquitto, apontando para essa configuração.
+    \item Aguarda ativamente até a porta responder, antes de liberar os testes.
+    \item Ao final da suíte, remove o container e o diretório temporário --- nenhum resíduo fica no sistema.
+\end{enumerate}
+
+\subsection{Casos de teste e o que cada um comprova}
+
+Foram escritos quatro testes, usando o protocolo MQTT versão 5 (que fornece códigos de motivo, ou \textit{reason codes}, explícitos nas confirmações do broker --- diferente da versão 3.1.1, que falha silenciosamente em vários casos de recusa):
+
+\begin{enumerate}[label=\textbf{Teste \arabic*}]
+    \item \texttt{test\_esp32\_user\_can\_publish\_to\_its\_topic} --- conecta como \texttt{esp32\_telemetria} e publica no tópico permitido. Verifica que o código de motivo da confirmação de publicação (PUBACK) indica sucesso.
+    \item \texttt{test\_esp32\_user\_subscribes\_but\_never\_receives\_without\_read\_access} --- conecta como \texttt{esp32\_telemetria} (que só tem permissão de escrita) e tenta assinar o próprio tópico. Verifica que, mesmo que a assinatura seja aceita pelo broker, nenhuma mensagem chega de fato quando outro cliente publica no mesmo tópico.
+    \item \texttt{test\_reader\_can\_subscribe\_and\_receive} --- conecta como \texttt{telemetria\_reader}, assina o tópico, e confirma que recebe corretamente uma mensagem publicada por \texttt{esp32\_telemetria}.
+    \item \texttt{test\_reader\_cannot\_publish} --- conecta como \texttt{telemetria\_reader} (que só tem permissão de leitura) e tenta publicar. Verifica que o código de motivo da confirmação indica recusa.
+\end{enumerate}
+
+\subsection{Descoberta durante a execução: ACL de leitura não é aplicada na assinatura}
+
+O Teste 2 originalmente foi escrito com uma expectativa diferente da que o código final reflete: a suposição inicial era de que o broker recusaria explicitamente a \textit{assinatura} (subscribe) de um usuário sem permissão de leitura, retornando um código de erro na confirmação de assinatura (SUBACK). Ao rodar o teste pela primeira vez, o resultado real foi diferente: o Mosquitto \textbf{aceita} a assinatura normalmente (retorna sucesso no SUBACK), e só aplica a restrição de ACL no momento de \textbf{entregar} cada mensagem que chega depois.
+
+Isso significa que, do ponto de vista de quem programa um cliente MQTT, não existe um sinal de erro imediato ao tentar assinar um tópico sem permissão --- a única forma de perceber a restrição é observar que nenhuma mensagem chega, mesmo com outros clientes publicando ativamente. O teste foi reescrito para validar exatamente esse comportamento (nome atual: \texttt{...\_subscribes\_but\_never\_receives\_without\_read\_access}), e essa descoberta foi documentada no \texttt{SCOPE.md} do projeto para que não seja esquecida ou mal-interpretada como um bug em etapas futuras.
+
+Uma segunda nuance encontrada durante a execução do Teste 1: o código de motivo retornado pelo broker para uma publicação bem-sucedida nem sempre é exatamente \texttt{0} (Success). Quando não há nenhum assinante conectado no momento da publicação, o Mosquitto retorna o código \texttt{16} (\textit{"No matching subscribers"}), que ainda representa sucesso do ponto de vista da autorização --- a publicação foi aceita, só não havia ninguém ouvindo. A regra correta, e a que os testes finais aplicam, é: códigos de motivo menores que 128 indicam sucesso (com ou sem entrega); códigos maiores ou iguais a 128 indicam recusa por falta de autorização.
+
+\subsection{Resultado da execução}
+
+\begin{lstlisting}[caption={Saída real de \texttt{pytest -v}}]
+tests/test_mosquitto_acl.py::test_esp32_user_can_publish_to_its_topic PASSED
+tests/test_mosquitto_acl.py::test_esp32_user_subscribes_but_never_receives_without_read_access PASSED
+tests/test_mosquitto_acl.py::test_reader_can_subscribe_and_receive PASSED
+tests/test_mosquitto_acl.py::test_reader_cannot_publish PASSED
+
+4 passed in 8.66s
+\end{lstlisting}
+
+Após a execução, foi confirmado manualmente que nenhum container ou volume residual ficou no sistema (\texttt{docker ps -a} não lista nenhum container de teste).
+
+\section{Validação manual ponta a ponta}
+\label{sec:validacao}
+
+Além dos testes automatizados, o comportamento completo do sistema foi validado manualmente, subindo o ambiente de desenvolvimento real (\texttt{docker compose up}) e executando o script mock de publicação (desenvolvido no checkpoint anterior) contra o broker real, com um assinante (\texttt{mosquitto\_sub}, executado dentro do próprio container) ouvindo o tópico:
+
+\begin{lstlisting}[language=bash,caption={Comando de validação manual}]
+docker exec telemetria-mosquitto mosquitto_sub -h localhost -p 1883 \
+  -u telemetria_reader -P dev-reader-pw -t telemetria/esp32/data -C 3 &
+
+python -m mock_publisher --host 127.0.0.1 --port 1883 --no-tls \
+  --username esp32_telemetria --password dev-publisher-pw --duration 2
+\end{lstlisting}
+
+O assinante recebeu corretamente três mensagens JSON publicadas pelo script mock, confirmando que autenticação, autorização e o fluxo de dados completo funcionam de ponta a ponta.
+
+\subsection{Bug encontrado e corrigido durante a validação manual}
+
+A primeira tentativa dessa validação falhou com um erro de SSL (\textit{"EOF occurred in violation of protocol"}). A causa: o script \texttt{mock\_publisher}, escrito no checkpoint anterior --- antes da decisão de que o ambiente local rodaria sem TLS --- sempre ativava TLS incondicionalmente ao conectar em modo não-simulado. Como o broker de desenvolvimento não fala TLS, a conexão falhava na camada de criptografia.
+
+A correção foi adicionar uma opção de linha de comando \texttt{--no-tls} ao script, permitindo desativar TLS explicitamente ao apontar para o broker de desenvolvimento local, mantendo TLS como padrão (ativado) para uso contra o broker de produção na VPS:
+
+\begin{lstlisting}[language=Python,caption={Trecho da correção em mock\_publisher/\_\_main\_\_.py}]
+parser.add_argument(
+    "--no-tls", action="store_true",
+    help="desliga TLS (broker de dev local nao usa TLS; producao usa)",
+)
+...
+if not args.no_tls:
+    client.tls_set()
+\end{lstlisting}
+
+Esse ajuste ilustra o valor de validar manualmente além dos testes automatizados: a suíte de testes de integração do broker não exercitava o \texttt{mock\_publisher} (ela usa clientes MQTT construídos diretamente nos próprios testes), então esse problema de integração entre os dois componentes só apareceu ao testar o fluxo completo manualmente.
+
+\section{Resumo do que ficou pronto}
+
+\begin{itemize}
+    \item Broker MQTT (Mosquitto) rodando como container Docker, com autenticação obrigatória e controle de acesso por tópico.
+    \item Dois papéis de usuário bem definidos, seguindo o princípio de menor privilégio.
+    \item Geração de credenciais sem nunca tocar em texto plano em disco versionado.
+    \item Quatro testes de integração automatizados, validando o comportamento real do broker (não um comportamento assumido).
+    \item Validação manual ponta a ponta confirmando o fluxo completo: publicação autenticada $\rightarrow$ broker $\rightarrow$ entrega autorizada.
+    \item Uma correção de compatibilidade no componente do checkpoint anterior, descoberta e resolvida durante a validação.
+\end{itemize}
+
+\section{Próximos passos}
+
+O próximo checkpoint do projeto (checkpoint 4, conforme o \texttt{CLAUDE.md}) é o script de ingestão, responsável por assinar o tópico de telemetria como o usuário \texttt{telemetria\_reader} e gravar os dados recebidos no InfluxDB, iniciando o caminho de armazenamento histórico da arquitetura definida no \texttt{SCOPE.md}.
+
+\end{document}

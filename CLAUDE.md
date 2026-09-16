@@ -69,6 +69,8 @@ Cada item da lista é um checkpoint independente: implementar, testar, resumir, 
 
 Quando o usuário pedir uma explicação mais aprofundada de um checkpoint (ex: em PDF), o material vai em `docs/checkpoint-NN-nome-curto.tex` (+ `.pdf` compilado), versionado junto com o resto do projeto — não solto fora do repositório. `SCOPE.md`/`CLAUDE.md` continuam sendo a referência rápida; os documentos em `docs/` são para leitura aprofundada sob demanda, não mantidos automaticamente a cada checkpoint.
 
+`docs/relatorio-de-testes.tex` (+ `.pdf`) é diferente: não é por checkpoint, é um catálogo de **todos** os testes do projeto até o momento (nome + o que verifica e por quê), pra revisão de cobertura. Também sob demanda, não regenerado automaticamente — mas quando o usuário pedir "atualiza o relatório de testes" (ou algo assim), regerar do zero cobrindo todos os testes existentes na hora, não só os novos.
+
 ## Referências
 
 - Decisões técnicas e arquitetura: `SCOPE.md`

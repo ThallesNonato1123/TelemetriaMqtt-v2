@@ -1,0 +1,327 @@
+\documentclass[10pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\geometry{margin=2.2cm}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{parskip}
+\usepackage{titlesec}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!50!black,
+    citecolor=blue!50!black,
+}
+
+\titleformat{\section}{\normalfont\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{1em}{}
+
+\sloppy
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\title{\textbf{TelemetriaMqtt v2} \\[4pt]
+\large Relatório de Testes}
+\author{Projeto de Telemetria FSAE}
+\date{16 de setembro de 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent Catálogo de todos os testes automatizados do projeto até o momento: \textbf{61 testes} em 3 suítes independentes (firmware, backend, infraestrutura). Pra cada teste, uma frase explicando o que ele verifica e por que ele existe — não o nome da função, que já está listado, mas o raciocínio por trás. Este documento é gerado sob demanda e reflete o estado do projeto na data acima; para o número exato de testes a qualquer momento, rodar \texttt{pytest --collect-only} em cada suíte (ver \texttt{CLAUDE.md}).
+\end{abstract}
+
+\tableofcontents
+
+\section{Resumo}
+
+\begin{center}
+\begin{tabular}{@{}lrl@{}}
+\toprule
+\textbf{Suíte} & \textbf{Testes} & \textbf{Como rodar} \\
+\midrule
+Firmware (\texttt{firmware/}) & 1 & \texttt{pio test -e native} \\
+Backend (\texttt{backend/}) & 43 & \texttt{pytest} (dentro do venv de \texttt{backend/}) \\
+Infra (\texttt{infra/}) & 17 & \texttt{pytest} (dentro do venv de \texttt{infra/}, exige Docker) \\
+\midrule
+\textbf{Total} & \textbf{61} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Todas as três suítes rodam automaticamente a cada \texttt{push}/pull request via GitHub Actions (\texttt{.github/workflows/ci.yml}).
+
+\section{Filosofia de teste do projeto}
+
+Três regras, definidas em \texttt{CLAUDE.md}, moldam como os testes abaixo foram escritos:
+
+\begin{itemize}
+    \item \textbf{TDD}: testes escritos antes ou junto da implementação, nunca depois "pra ver se passa".
+    \item \textbf{Testes são intocáveis depois de escritos}: nunca apagados ou alterados pra fazer passar — se um teste falha, conserta-se a implementação.
+    \item \textbf{Lógica pura separada de integração}: cada módulo separa código sem I/O (fácil de testar exaustivamente) de código com rede/Docker/subprocessos (testado com dependências simuladas quando a infraestrutura real ainda não existe, e com a infraestrutura real assim que ela existe).
+\end{itemize}
+
+\section{Firmware}
+
+\subsection{test/test\_\allowbreak scaffolding/test\_\allowbreak main.cpp}
+
+Ambiente \texttt{native} do PlatformIO — roda no computador, sem hardware.
+
+\begin{center}
+\begin{longtable}{L{5cm}L{9.5cm}}
+\toprule
+\textbf{Teste} & \textbf{O que verifica e por quê} \\
+\midrule
+\endhead
+\texttt{test\_\allowbreak native\_\allowbreak test\_\allowbreak harness\_\allowbreak runs} & Prova (via \texttt{2+2==4}) que toda a cadeia de ferramentas do ambiente nativo funciona — download da biblioteca Unity, compilação, execução, relatório de resultado — antes de existir qualquer lógica real pra testar. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\section{Backend --- mock publisher (\texttt{backend/mock\_\allowbreak publisher/})}
+
+Simula o ESP32 publicando telemetria via MQTT, sem hardware.
+
+\subsection{tests/test\_\allowbreak signal\_\allowbreak generator.py --- geração de sinais (lógica pura)}
+
+\begin{center}
+\begin{longtable}{L{5cm}L{9.5cm}}
+\toprule
+\textbf{Teste} & \textbf{O que verifica e por quê} \\
+\midrule
+\endhead
+\texttt{test\_\allowbreak signal\_\allowbreak specs\_\allowbreak cover\_\allowbreak all\_\allowbreak 20\_\allowbreak channels} & A tabela de especificações tem exatamente os 20 canais do carro, nem mais nem menos — evita esquecer ou duplicar um sinal ao editar. \\
+\texttt{test\_\allowbreak snapshot\_\allowbreak has\_\allowbreak all\_\allowbreak channels\_\allowbreak plus\_\allowbreak timestamp} & O JSON de saída tem exatamente os 20 campos + \texttt{ts}, o schema que o resto do sistema depende. \\
+\texttt{test\_\allowbreak snapshot\_\allowbreak values\_\allowbreak are\_\allowbreak within\_\allowbreak declared\_\allowbreak range} & Nenhum valor sintético (ex: RPM) sai da faixa física plausível declarada, em vários instantes de tempo. \\
+\texttt{test\_\allowbreak binary\_\allowbreak signals\_\allowbreak are\_\allowbreak always\_\allowbreak 0\_\allowbreak or\_\allowbreak 1} & Sinais digitais (bombaInput, giratoriaInput) nunca saem como float ou fora de \{0,1\}. \\
+\texttt{test\_\allowbreak slow\_\allowbreak tier\_\allowbreak value\_\allowbreak is\_\allowbreak held\_\allowbreak constant\_\allowbreak within\_\allowbreak its\_\allowbreak own\_\allowbreak interval} & Um sinal de 2Hz mantém o mesmo valor dentro da própria janela de amostragem (comportamento de "degrau", não interpolação). \\
+\texttt{test\_\allowbreak slow\_\allowbreak tier\_\allowbreak value\_\allowbreak changes\_\allowbreak after\_\allowbreak crossing\_\allowbreak its\_\allowbreak interval\_\allowbreak boundary} & Complementa o teste anterior: ao cruzar a fronteira do intervalo, o valor muda — sem isso, uma implementação que sempre retorna o mesmo número fixo passaria no teste anterior. \\
+\texttt{test\_\allowbreak fast\_\allowbreak tier\_\allowbreak changes\_\allowbreak more\_\allowbreak often\_\allowbreak than\_\allowbreak slow\_\allowbreak tier\_\allowbreak over\_\allowbreak one\_\allowbreak second} & Um sinal de 20Hz mostra muito mais valores distintos que um de 2Hz no mesmo intervalo de 1s — pega uma troca acidental de frequências entre sinais. \\
+\texttt{test\_\allowbreak timestamp\_\allowbreak is\_\allowbreak monotonic\_\allowbreak ms\_\allowbreak integer} & \texttt{ts} é sempre inteiro em milissegundos, compatível com \texttt{millis()} do firmware real do ESP32. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection{tests/test\_\allowbreak publisher.py --- publicação (integração, client MQTT simulado)}
+
+\begin{center}
+\begin{longtable}{L{5cm}L{9.5cm}}
+\toprule
+\textbf{Teste} & \textbf{O que verifica e por quê} \\
+\midrule
+\endhead
+\texttt{test\_\allowbreak publish\_\allowbreak snapshot\_\allowbreak calls\_\allowbreak client\_\allowbreak publish\_\allowbreak with\_\allowbreak correct\_\allowbreak topic} & Publica no tópico correto (\texttt{telemetria/esp32/data}), exatamente uma vez por snapshot. \\
+\texttt{test\_\allowbreak publish\_\allowbreak snapshot\_\allowbreak payload\_\allowbreak is\_\allowbreak valid\_\allowbreak json\_\allowbreak with\_\allowbreak expected\_\allowbreak keys} & O payload publicado é JSON válido, e \texttt{ts} bate com o tempo passado (2.5s $\to$ 2500ms). \\
+\texttt{test\_\allowbreak publish\_\allowbreak snapshot\_\allowbreak dry\_\allowbreak run\_\allowbreak does\_\allowbreak not\_\allowbreak touch\_\allowbreak client} & Modo \texttt{--dry-run} nunca toca o client MQTT real — só usa a função \texttt{sink} alternativa. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection{tests/test\_\allowbreak mock\_\allowbreak publisher\_\allowbreak main.py --- CLI (parsing e wiring do client)}
+
+\begin{center}
+\begin{longtable}{L{5cm}L{9.5cm}}
+\toprule
+\textbf{Teste} & \textbf{O que verifica e por quê} \\
+\midrule
+\endhead
+\texttt{test\_\allowbreak parse\_\allowbreak args\_\allowbreak defaults} & Valores padrão dos argumentos de linha de comando (host, porta, TLS ligado, sem duração limite). \\
+\texttt{test\_\allowbreak parse\_\allowbreak args\_\allowbreak no\_\allowbreak tls\_\allowbreak flag} & A flag \texttt{--no-tls} é reconhecida pelo parser. \\
+\texttt{test\_\allowbreak build\_\allowbreak client\_\allowbreak returns\_\allowbreak none\_\allowbreak in\_\allowbreak dry\_\allowbreak run} & Modo \texttt{--dry-run} não abre nenhuma conexão de rede. \\
+\texttt{test\_\allowbreak build\_\allowbreak client\_\allowbreak enables\_\allowbreak tls\_\allowbreak by\_\allowbreak default} & \textbf{Teste de regressão}: TLS fica ligado por padrão — esse era exatamente o comportamento que faltava e quebrou a validação manual no checkpoint 3. \\
+\texttt{test\_\allowbreak build\_\allowbreak client\_\allowbreak skips\_\allowbreak tls\_\allowbreak with\_\allowbreak no\_\allowbreak tls\_\allowbreak flag} & \texttt{--no-tls} realmente desliga o TLS (o bug corrigido). \\
+\texttt{test\_\allowbreak build\_\allowbreak client\_\allowbreak sets\_\allowbreak credentials\_\allowbreak when\_\allowbreak username\_\allowbreak given} & Usuário/senha são repassados ao client quando fornecidos. \\
+\texttt{test\_\allowbreak build\_\allowbreak client\_\allowbreak skips\_\allowbreak credentials\_\allowbreak when\_\allowbreak no\_\allowbreak username} & Sem usuário informado, \texttt{username\_\allowbreak pw\_\allowbreak set} não é chamado (evita erro com credenciais parciais). \\
+\texttt{test\_\allowbreak build\_\allowbreak client\_\allowbreak connects\_\allowbreak to\_\allowbreak configured\_\allowbreak host\_\allowbreak and\_\allowbreak port} & Conecta exatamente no host/porta configurados via CLI. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection{tests/test\_\allowbreak mock\_\allowbreak publisher\_\allowbreak loop.py --- loop de publicação (relógio/sleep injetáveis)}
+
+\begin{center}
+\begin{longtable}{L{5cm}L{9.5cm}}
+\toprule
+\textbf{Teste} & \textbf{O que verifica e por quê} \\
+\midrule
+\endhead
+\texttt{test\_\allowbreak run\_\allowbreak publish\_\allowbreak loop\_\allowbreak stops\_\allowbreak after\_\allowbreak duration} & O loop respeita o limite de \texttt{--duration} e para no tick certo. \\
+\texttt{test\_\allowbreak run\_\allowbreak publish\_\allowbreak loop\_\allowbreak passes\_\allowbreak increasing\_\allowbreak t\_\allowbreak to\_\allowbreak publish\_\allowbreak snapshot} & O tempo (\texttt{t}) passado a cada chamada avança corretamente, tick a tick. \\
+\texttt{test\_\allowbreak run\_\allowbreak publish\_\allowbreak loop\_\allowbreak forwards\_\allowbreak dry\_\allowbreak run\_\allowbreak flag} & A flag \texttt{dry\_\allowbreak run} é repassada corretamente pro \texttt{publish\_\allowbreak snapshot}. \\
+\texttt{test\_\allowbreak run\_\allowbreak publish\_\allowbreak loop\_\allowbreak passes\_\allowbreak client\_\allowbreak through} & O objeto \texttt{client} é repassado sem alteração. \\
+\texttt{test\_\allowbreak run\_\allowbreak publish\_\allowbreak loop\_\allowbreak runs\_\allowbreak forever\_\allowbreak without\_\allowbreak duration} & Sem \texttt{duration}, o loop não para sozinho (roda até ser interrompido externamente). \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+Os cinco testes acima usam um relógio e uma função de espera \textit{falsos} (que avançam instantaneamente, sem esperar tempo real) — por isso a suíte inteira do backend roda em menos de 0,2 segundos, mesmo simulando um loop que normalmente rodaria minutos.
+
+\section{Backend --- ingestão (\texttt{backend/ingestion/})}
+
+Assina o broker MQTT e grava cada mensagem no InfluxDB.
+
+\subsection{tests/test\_\allowbreak ingestion\_\allowbreak transform.py --- transformação payload $\to$ ponto (lógica pura)}
+
+\begin{center}
+\begin{longtable}{L{5cm}L{9.5cm}}
+\toprule
+\textbf{Teste} & \textbf{O que verifica e por quê} \\
+\midrule
+\endhead
+\texttt{test\_\allowbreak to\_\allowbreak point\_\allowbreak maps\_\allowbreak all\_\allowbreak 20\_\allowbreak numeric\_\allowbreak fields} & Todo sinal declarado vira um campo do ponto gravado — nenhum esquecido. \\
+\texttt{test\_\allowbreak to\_\allowbreak point\_\allowbreak uses\_\allowbreak measurement\_\allowbreak name} & O nome da \textit{measurement} é sempre \texttt{"telemetry"}. \\
+\texttt{test\_\allowbreak to\_\allowbreak point\_\allowbreak uses\_\allowbreak received\_\allowbreak at\_\allowbreak as\_\allowbreak time\_\allowbreak not\_\allowbreak device\_\allowbreak ts} & O timestamp do ponto é o horário de \textbf{recebimento} (parâmetro passado), não derivado do \texttt{ts} do payload — decisão de design central deste checkpoint (ver \texttt{docs/checkpoint-04}). \\
+\texttt{test\_\allowbreak to\_\allowbreak point\_\allowbreak keeps\_\allowbreak device\_\allowbreak ts\_\allowbreak as\_\allowbreak a\_\allowbreak reference\_\allowbreak field} & O \texttt{ts} original não é perdido: fica salvo como campo \texttt{device\_\allowbreak ts\_\allowbreak ms}. \\
+\texttt{test\_\allowbreak to\_\allowbreak point\_\allowbreak raises\_\allowbreak on\_\allowbreak missing\_\allowbreak field} & Um payload incompleto levanta erro explícito, em vez de ser gravado parcialmente no banco. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection{tests/test\_\allowbreak ingest.py --- callback MQTT (integração, writer simulado)}
+
+\begin{center}
+\begin{longtable}{L{5cm}L{9.5cm}}
+\toprule
+\textbf{Teste} & \textbf{O que verifica e por quê} \\
+\midrule
+\endhead
+\texttt{test\_\allowbreak on\_\allowbreak message\_\allowbreak parses\_\allowbreak valid\_\allowbreak payload\_\allowbreak and\_\allowbreak calls\_\allowbreak writer} & Uma mensagem MQTT válida chega, é transformada e o \textit{writer} é chamado com o ponto correto. \\
+\texttt{test\_\allowbreak on\_\allowbreak message\_\allowbreak ignores\_\allowbreak invalid\_\allowbreak json} & JSON corrompido é descartado silenciosamente (do ponto de vista do writer) — não derruba o processo. \\
+\texttt{test\_\allowbreak on\_\allowbreak message\_\allowbreak ignores\_\allowbreak payload\_\allowbreak missing\_\allowbreak fields} & Payload estruturalmente válido mas incompleto também é descartado, não gravado parcialmente. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection{tests/test\_\allowbreak influx\_\allowbreak writer.py --- wiring do SDK InfluxDB (client mockado)}
+
+\begin{center}
+\begin{longtable}{L{5cm}L{9.5cm}}
+\toprule
+\textbf{Teste} & \textbf{O que verifica e por quê} \\
+\midrule
+\endhead
+\texttt{test\_\allowbreak writer\_\allowbreak calls\_\allowbreak write\_\allowbreak api\_\allowbreak with\_\allowbreak correct\_\allowbreak bucket\_\allowbreak and\_\allowbreak org} & \texttt{write\_\allowbreak api.write(...)} é chamado com o bucket e a organização configurados. \\
+\texttt{test\_\allowbreak writer\_\allowbreak builds\_\allowbreak point\_\allowbreak with\_\allowbreak measurement\_\allowbreak fields\_\allowbreak and\_\allowbreak time} & O \textit{line protocol} do ponto construído tem measurement, campos e timestamp corretos. \\
+\texttt{test\_\allowbreak writer\_\allowbreak skips\_\allowbreak none\_\allowbreak fields} & Um campo com valor \texttt{None} não é enviado ao SDK (que rejeitaria a chamada). \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection{tests/test\_\allowbreak ingestion\_\allowbreak main.py --- CLI (parsing, wiring do writer e do client MQTT)}
+
+\begin{center}
+\begin{longtable}{L{5cm}L{9.5cm}}
+\toprule
+\textbf{Teste} & \textbf{O que verifica e por quê} \\
+\midrule
+\endhead
+\texttt{test\_\allowbreak parse\_\allowbreak args\_\allowbreak defaults} & Valores padrão dos argumentos (host, porta, URL/org/bucket do InfluxDB). \\
+\texttt{test\_\allowbreak build\_\allowbreak writer\_\allowbreak returns\_\allowbreak dry\_\allowbreak run\_\allowbreak writer\_\allowbreak in\_\allowbreak dry\_\allowbreak run} & Em \texttt{--dry-run}, o writer só imprime, não grava. \\
+\texttt{test\_\allowbreak build\_\allowbreak writer\_\allowbreak builds\_\allowbreak real\_\allowbreak influx\_\allowbreak client\_\allowbreak when\_\allowbreak not\_\allowbreak dry\_\allowbreak run} & Fora do dry-run, a URL/token/org/bucket são repassados corretamente pro SDK do InfluxDB (sem precisar de um banco real rodando). \\
+\texttt{test\_\allowbreak build\_\allowbreak mqtt\_\allowbreak client\_\allowbreak enables\_\allowbreak tls\_\allowbreak by\_\allowbreak default} & \textbf{Teste de regressão}, espelhando o mesmo bug já corrigido no mock\_\allowbreak publisher: TLS precisa ficar ligado por padrão. \\
+\texttt{test\_\allowbreak build\_\allowbreak mqtt\_\allowbreak client\_\allowbreak skips\_\allowbreak tls\_\allowbreak with\_\allowbreak no\_\allowbreak tls\_\allowbreak flag} & \texttt{--no-tls} desliga o TLS de fato. \\
+\texttt{test\_\allowbreak build\_\allowbreak mqtt\_\allowbreak client\_\allowbreak sets\_\allowbreak credentials\_\allowbreak when\_\allowbreak username\_\allowbreak given} & Usuário/senha repassados ao client MQTT. \\
+\texttt{test\_\allowbreak build\_\allowbreak mqtt\_\allowbreak client\_\allowbreak subscribes\_\allowbreak to\_\allowbreak telemetry\_\allowbreak topic} & Assina exatamente o tópico \texttt{telemetria/esp32/data}, com QoS 1. \\
+\texttt{test\_\allowbreak build\_\allowbreak mqtt\_\allowbreak client\_\allowbreak wires\_\allowbreak on\_\allowbreak message\_\allowbreak callback} & O callback de mensagem passado é de fato o que fica registrado no client. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\section{Infraestrutura (\texttt{infra/})}
+
+Broker MQTT (Mosquitto via Docker), \texttt{docker-compose.yml}, geração de credenciais, e integração ponta a ponta. Todos os testes desta seção sobem containers Docker \textbf{reais} — nenhum broker é simulado.
+
+\subsection{tests/test\_\allowbreak mosquitto\_\allowbreak acl.py --- controle de acesso por tópico}
+
+\begin{center}
+\begin{longtable}{L{5cm}L{9.5cm}}
+\toprule
+\textbf{Teste} & \textbf{O que verifica e por quê} \\
+\midrule
+\endhead
+\texttt{test\_\allowbreak esp32\_\allowbreak user\_\allowbreak can\_\allowbreak publish\_\allowbreak to\_\allowbreak its\_\allowbreak topic} & O usuário do dispositivo (write-only) consegue publicar no próprio tópico. \\
+\texttt{test\_\allowbreak esp32\_\allowbreak user\_\allowbreak subscribes\_\allowbreak but\_\allowbreak never\_\allowbreak receives\_\allowbreak without\_\allowbreak read\_\allowbreak access} & Mesmo usuário consegue \textit{assinar} o tópico (o Mosquitto aceita o SUBACK), mas nunca recebe nada — a ACL de leitura é aplicada na entrega, não na assinatura (descoberta documentada em \texttt{docs/checkpoint-03}). \\
+\texttt{test\_\allowbreak reader\_\allowbreak can\_\allowbreak subscribe\_\allowbreak and\_\allowbreak receive} & O usuário consumidor (read-only) recebe corretamente o que o dispositivo publica. \\
+\texttt{test\_\allowbreak reader\_\allowbreak cannot\_\allowbreak publish} & O mesmo usuário consumidor não consegue publicar (reason code de recusa). \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection{tests/test\_\allowbreak mosquitto\_\allowbreak auth.py --- autenticação}
+
+\begin{center}
+\begin{longtable}{L{5cm}L{9.5cm}}
+\toprule
+\textbf{Teste} & \textbf{O que verifica e por quê} \\
+\midrule
+\endhead
+\texttt{test\_\allowbreak correct\_\allowbreak credentials\_\allowbreak are\_\allowbreak accepted} & Baseline positivo: credenciais corretas são aceitas — garante que os testes de recusa abaixo não passariam só porque o broker está fora do ar. \\
+\texttt{test\_\allowbreak wrong\_\allowbreak password\_\allowbreak is\_\allowbreak rejected} & Usuário válido, senha errada, é recusado. A propriedade que motivou o checkpoint 3 inteiro (evitar repetir o vazamento do TCC antigo). \\
+\texttt{test\_\allowbreak unknown\_\allowbreak username\_\allowbreak is\_\allowbreak rejected} & Usuário que não existe no \texttt{passwd} é recusado. \\
+\texttt{test\_\allowbreak anonymous\_\allowbreak connection\_\allowbreak is\_\allowbreak rejected} & Conexão sem usuário/senha nenhum é recusada (\texttt{allow\_\allowbreak anonymous false} funciona de verdade). \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection{tests/test\_\allowbreak generate\_\allowbreak passwd.py --- script de geração de credenciais}
+
+\begin{center}
+\begin{longtable}{L{5cm}L{9.5cm}}
+\toprule
+\textbf{Teste} & \textbf{O que verifica e por quê} \\
+\midrule
+\endhead
+\texttt{test\_\allowbreak creates\_\allowbreak passwd\_\allowbreak file\_\allowbreak if\_\allowbreak missing} & O script cria o arquivo \texttt{passwd} do zero se ele ainda não existir. \\
+\texttt{test\_\allowbreak adds\_\allowbreak entry\_\allowbreak for\_\allowbreak the\_\allowbreak given\_\allowbreak username} & O usuário informado aparece corretamente no arquivo gerado. \\
+\texttt{test\_\allowbreak adding\_\allowbreak a\_\allowbreak second\_\allowbreak user\_\allowbreak preserves\_\allowbreak the\_\allowbreak first} & Adicionar um segundo usuário não apaga o primeiro (comportamento de \textit{append}, não sobrescrita). \\
+\texttt{test\_\allowbreak rerunning\_\allowbreak for\_\allowbreak the\_\allowbreak same\_\allowbreak user\_\allowbreak updates\_\allowbreak not\_\allowbreak duplicates} & Rodar de novo pro mesmo usuário atualiza a senha, não duplica a entrada. \\
+\texttt{test\_\allowbreak generated\_\allowbreak credentials\_\allowbreak actually\_\allowbreak authenticate\_\allowbreak against\_\allowbreak mosquitto} & A senha gerada pelo script é de fato aceita por um Mosquitto real que carrega esse arquivo — confirmação ponta a ponta, não só "o arquivo tem o formato certo". \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection{tests/test\_\allowbreak docker\_\allowbreak compose.py --- docker-compose.yml real}
+
+\begin{center}
+\begin{longtable}{L{5cm}L{9.5cm}}
+\toprule
+\textbf{Teste} & \textbf{O que verifica e por quê} \\
+\midrule
+\endhead
+\texttt{test\_\allowbreak docker\_\allowbreak compose\_\allowbreak config\_\allowbreak is\_\allowbreak syntactically\_\allowbreak valid} & \texttt{docker compose config} resolve o arquivo sem erro de sintaxe/schema. \\
+\texttt{test\_\allowbreak docker\_\allowbreak compose\_\allowbreak up\_\allowbreak starts\_\allowbreak a\_\allowbreak working\_\allowbreak broker} & \texttt{docker compose up} de verdade sobe um broker que aceita conexão na porta mapeada — diferente dos outros testes desta seção, que usam \texttt{docker run} direto com config copiada, este é o único que exercita o \texttt{docker-compose.yml} tal como ele é. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection{tests/test\_\allowbreak end\_\allowbreak to\_\allowbreak end.py --- integração ponta a ponta (mock publisher $\to$ broker $\to$ ingestão)}
+
+\begin{center}
+\begin{longtable}{L{5cm}L{9.5cm}}
+\toprule
+\textbf{Teste} & \textbf{O que verifica e por quê} \\
+\midrule
+\endhead
+\texttt{test\_\allowbreak mock\_\allowbreak publisher\_\allowbreak message\_\allowbreak reaches\_\allowbreak ingestion\_\allowbreak correctly\_\allowbreak transformed} & Automatiza a validação manual repetida em todo checkpoint: o mock publisher (código de produção) publica de verdade num broker real, e o \texttt{make\_\allowbreak on\_\allowbreak message} da ingestão (também código de produção) recebe e transforma a mensagem corretamente. \\
+\texttt{test\_\allowbreak multiple\_\allowbreak snapshots\_\allowbreak all\_\allowbreak reach\_\allowbreak ingestion\_\allowbreak in\_\allowbreak order} & Várias mensagens em sequência chegam todas, na ordem certa, sem perda nem duplicação. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\section{O que ainda não é testado (decisão consciente, não descuido)}
+
+\begin{itemize}
+    \item \textbf{\texttt{infra/mosquitto/mosquitto.conf} e \texttt{acl.conf} em si} não têm teste unitário próprio — são exercitados indiretamente por \emph{todos} os testes de \texttt{infra/}, já que o Mosquitto real só sobe se esses arquivos forem sintaticamente válidos.
+    \item \textbf{Checkpoints 5 em diante} (InfluxDB, Grafana, firmware real) ainda não existem, então não há teste pra eles ainda — entram na mesma disciplina de TDD conforme cada checkpoint for aberto.
+    \item \textbf{\texttt{.github/workflows/ci.yml}} não tem teste automatizado de si mesmo (não é comum nem prático testar um workflow de CI com outro teste) — a validação é rodar de verdade e observar o resultado, o que foi feito manualmente a cada mudança nele.
+\end{itemize}
+
+\end{document}

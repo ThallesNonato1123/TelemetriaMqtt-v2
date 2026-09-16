@@ -15,14 +15,15 @@ Instruções de trabalho para este repositório. Ver `SCOPE.md` para as decisõe
 
 1. Scaffolding do repo — estrutura de pastas, PlatformIO, `.gitignore`, `secrets.h.example`
 2. Script mock de publicação MQTT (simula o ESP32, sem hardware — ver seção "Simulador de desenvolvimento" no SCOPE.md)
-3. Configuração do broker Mosquitto (TLS, credenciais/ACL por dispositivo)
+3. `docker-compose` local + configuração do broker Mosquitto (credenciais/ACL por dispositivo; sem TLS em dev local — ver seção "Docker" no SCOPE.md)
 4. Script de ingestão (MQTT → InfluxDB)
 5. Schema/setup do InfluxDB
 6. Dashboards Grafana — caminho histórico (datasource InfluxDB)
 7. Dashboard Grafana — caminho ao vivo (Grafana Live + plugin MQTT)
 8. Firmware — parser CAN (TWAI + tabela de payloads do SCOPE.md)
 9. Firmware — integração MQTT/WiFi/TLS
-10. Validação de integração ponta a ponta
+10. Traefik + Let's Encrypt (DuckDNS) + deploy na VPS
+11. Validação de integração ponta a ponta
 
 Cada item da lista é um checkpoint independente: implementar, testar, resumir, parar para revisão.
 

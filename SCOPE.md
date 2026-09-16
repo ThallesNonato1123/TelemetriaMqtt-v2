@@ -12,14 +12,16 @@ Capturar sinais do barramento CAN do carro (RPM, temperaturas, correntes de PDM,
 [Carro: PDM32 → CAN2, 500kbps, payloads 0x100-0x131 (ver tabela abaixo)]
           │
           ▼
-   [ESP32 + SN65HVD230] ──WiFi/MQTT (TLS)──► [Mosquitto na VPS]
-          ▲
-          │ (em desenvolvimento, sem hardware: script mock no PC publica
-          │  direto no broker, mesmo tópico/JSON que o ESP32 vai usar)
-                                                     │
-                                    ┌────────────────┴────────────────┐
-                                    ▼                                 ▼
-                     [Grafana Live + plugin MQTT]        [Script de ingestão própria]
+   [ESP32 + SN65HVD230] ──WiFi/MQTT (TLS)──► [Traefik] ──► [Mosquitto]
+          ▲                                     │         (containers Docker
+          │ (em desenvolvimento, sem hardware:   │          na VPS, TLS via
+          │  script mock no PC publica direto    │          Let's Encrypt +
+          │  no broker, mesmo tópico/JSON que     │          DuckDNS)
+          │  o ESP32 vai usar)                   │
+                                                  │                 │
+                                    ┌─────────────┴──────┬──────────┘
+                                    ▼                    ▼
+                     [Grafana Live + plugin MQTT]  [Script de ingestão própria]
                      painel "ao vivo", soft real-time              │
                      (centenas de ms, sem polling)                 ▼
                                                               [InfluxDB]
@@ -27,6 +29,8 @@ Capturar sinais do barramento CAN do carro (RPM, temperaturas, correntes de PDM,
                                                                      ▼
                                                      [Grafana: dashboards históricos]
 ```
+
+Todos os serviços de backend (Traefik, Mosquitto, InfluxDB, Grafana, script de ingestão) rodam como containers Docker via `docker-compose`, tanto em desenvolvimento local (sem TLS, rede isolada) quanto na VPS (com TLS real via Traefik + Let's Encrypt).
 
 Dois caminhos deliberadamente separados: o painel ao vivo não depende do InfluxDB (elimina o limite de refresh de ~5s do polling), e o caminho histórico fica isolado para análise pós-evento.
 
@@ -42,6 +46,9 @@ Todas as escolhas de tecnologia feitas até agora, num lugar só (ver `CLAUDE.md
 | Armazenamento | InfluxDB |
 | Visualização | Grafana — datasource InfluxDB (caminho histórico) + plugin `grafana-mqtt-datasource` (open source) via Grafana Live (caminho ao vivo) |
 | Infra / VPS | Oracle Cloud Free Tier (plano B: Hetzner CX ou Contabo) |
+| Orquestração | Docker + docker-compose — todos os serviços de backend containerizados (Mosquitto, InfluxDB, Grafana, script de ingestão), tanto em dev local quanto na VPS |
+| Reverse proxy / TLS | Traefik — gerencia Let's Encrypt automaticamente pra Mosquitto + Grafana na VPS. Sem TLS em dev local (rede Docker isolada, não exposta à internet) |
+| Domínio | DuckDNS (gratuito) — necessário pro desafio ACME do Let's Encrypt |
 | Hardware | ESP32 DevKit V1 (WROOM-32) + transceiver CAN SN65HVD230 |
 | Controle de versão | git, sem remote configurado (repositório só local por enquanto) |
 
@@ -124,18 +131,27 @@ Pra desenvolver e testar o pipeline de backend (broker → ingestão → InfluxD
 ## Backend / Infra (VPS)
 
 - **VPS**: começar em Oracle Cloud Free Tier (4 vCPU ARM / 24GB RAM, custo zero); plano B pago (Hetzner CX ou Contabo, ~$5-7/mês) se o free tier se mostrar instável ou a instância for reclamada por ociosidade.
-- **Broker MQTT**: Mosquitto self-hosted na VPS, com TLS e credenciais/ACL por dispositivo (o ESP32 só publica no seu próprio tópico, sem acesso admin ao broker).
+- **Broker MQTT**: Mosquitto, container Docker, com credenciais/ACL por dispositivo (o ESP32 só publica no seu próprio tópico, sem acesso admin ao broker).
 - **Ingestão histórica**: script próprio (Python ou Node.js, a definir), assina o broker e grava no InfluxDB — versionado junto com o resto do código, não Node-RED.
-- **Armazenamento**: InfluxDB (mantido do projeto antigo).
+- **Armazenamento**: InfluxDB, container Docker.
 - **Visualização**:
-  - Ao vivo: Grafana + plugin `grafana-mqtt-datasource` (open source, sem custo) via Grafana Live, assinando o tópico MQTT diretamente.
+  - Ao vivo: Grafana (container Docker) + plugin `grafana-mqtt-datasource` (open source, sem custo) via Grafana Live, assinando o tópico MQTT diretamente.
   - Histórico: Grafana com datasource InfluxDB, dashboards de análise pós-evento.
+
+### Docker (decisão via grill-me, ver stack tecnológico acima)
+
+- **Escopo**: todos os serviços de backend containerizados (Mosquitto, InfluxDB, Grafana, script de ingestão) — nenhum instalado nativamente no SO da VPS. Justificativa: reprodutibilidade entre dev local e VPS, todas as imagens oficiais suportam ARM64 (confirmado, sem bloqueio pra Oracle Cloud), e não há motivo técnico pra deixar parte nativo/parte container.
+- **Ambiente local**: `docker-compose` roda a mesma stack no PC pra desenvolvimento/teste dos checkpoints 3, 5, 6 e 7 (Mosquitto, InfluxDB, Grafana) sem precisar tocar na VPS a cada mudança. Sem TLS localmente (rede Docker isolada, não exposta à internet) — só a VPS usa TLS real.
+- **TLS/certificado na VPS**: **Traefik** como reverse proxy único na frente de Mosquitto e Grafana, renovando Let's Encrypt automaticamente pros dois (roteamento TCP pro MQTT, HTTP pro Grafana) — menos manutenção do que um certbot standalone com script de renovação próprio.
+- **Domínio**: **DuckDNS** (gratuito) apontando pra VPS, necessário porque Let's Encrypt não funciona só com IP.
 
 ## Segurança
 
+**Postura**: mínimo essencial, sem over-engineering — dado o uso (telemetria de carro de competição, não um sistema crítico com dados sensíveis de terceiros), não vamos investir em hardening além do básico abaixo.
+
 - Nenhuma credencial em arquivo versionado (firmware ou infra).
 - Credenciais MQTT únicas por dispositivo, com ACL restrita por tópico.
-- TLS real (Let's Encrypt) no broker.
+- TLS real (Let's Encrypt via Traefik) no broker e no Grafana — só na VPS; ambiente de desenvolvimento local roda sem TLS (rede Docker isolada, não exposta à internet).
 - **Pendência do projeto antigo**: repositório `TelemetriaMqtt` é público no GitHub e tem a senha do WiFi e credenciais do broker MQTT (HiveMQ Cloud) expostas em texto plano no histórico de commits. Recomendado trocar essas credenciais assim que possível, independente do novo projeto.
 
 ## Fora de escopo por enquanto

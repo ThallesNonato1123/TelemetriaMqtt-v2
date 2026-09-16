@@ -11,6 +11,9 @@ venv/
 # Node
 node_modules/
 
+# Mosquitto — credenciais reais, nunca versionar (só passwd, não os .conf)
+infra/mosquitto/config/passwd
+
 # OS / editor
 .DS_Store
 *.swp

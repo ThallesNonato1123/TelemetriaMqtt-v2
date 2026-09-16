@@ -149,8 +149,9 @@ Pra desenvolver e testar o pipeline de backend (broker → ingestão → InfluxD
 
 **Postura**: mínimo essencial, sem over-engineering — dado o uso (telemetria de carro de competição, não um sistema crítico com dados sensíveis de terceiros), não vamos investir em hardening além do básico abaixo.
 
-- Nenhuma credencial em arquivo versionado (firmware ou infra).
-- Credenciais MQTT únicas por dispositivo, com ACL restrita por tópico.
+- Nenhuma credencial em arquivo versionado (firmware ou infra) — `infra/mosquitto/config/passwd` é gitignored, gerado localmente via `infra/mosquitto/generate_passwd.sh` (usa o binário `mosquitto_passwd` dentro do container oficial, sem precisar instalar Mosquitto no host).
+- **Usuários MQTT** (definidos em `infra/mosquitto/config/acl.conf`, checkpoint 3): `esp32_telemetria` (write-only em `telemetria/esp32/data` — usado pelo firmware real e pelo mock publisher) e `telemetria_reader` (read-only no mesmo tópico — usado pelo script de ingestão e pelo Grafana Live). Nenhum dos dois tem acesso admin ao broker.
+- **Nota de comportamento do Mosquitto** (confirmada rodando testes de integração reais): a ACL de leitura é aplicada na hora de *entregar* a mensagem, não na hora do SUBACK — um cliente sem permissão de leitura consegue assinar um tópico sem erro, mas nunca recebe nada publicado nele. Isso é esperado, não um bug.
 - TLS real (Let's Encrypt via Traefik) no broker e no Grafana — só na VPS; ambiente de desenvolvimento local roda sem TLS (rede Docker isolada, não exposta à internet).
 - **Pendência do projeto antigo**: repositório `TelemetriaMqtt` é público no GitHub e tem a senha do WiFi e credenciais do broker MQTT (HiveMQ Cloud) expostas em texto plano no histórico de commits. Recomendado trocar essas credenciais assim que possível, independente do novo projeto.
 

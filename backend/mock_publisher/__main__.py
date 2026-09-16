@@ -15,6 +15,10 @@ def main():
     parser.add_argument("--port", type=int, default=8883)
     parser.add_argument("--username")
     parser.add_argument("--password")
+    parser.add_argument(
+        "--no-tls", action="store_true",
+        help="desliga TLS (broker de dev local não usa TLS; produção na VPS usa)",
+    )
     parser.add_argument("--duration", type=float, default=None, help="segundos rodando (padrão: para sempre)")
     args = parser.parse_args()
 
@@ -23,7 +27,8 @@ def main():
         client = mqtt.Client()
         if args.username:
             client.username_pw_set(args.username, args.password)
-        client.tls_set()
+        if not args.no_tls:
+            client.tls_set()
         client.connect(args.host, args.port)
         client.loop_start()
 

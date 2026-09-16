@@ -8,7 +8,7 @@ from mock_publisher.publisher import MQTT_TOPIC, publish_snapshot
 PUBLISH_HZ = 20
 
 
-def main():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Mock ESP32 telemetry publisher")
     parser.add_argument("--dry-run", action="store_true", help="print JSON instead of publishing to MQTT")
     parser.add_argument("--host", default="localhost")
@@ -20,17 +20,32 @@ def main():
         help="desliga TLS (broker de dev local não usa TLS; produção na VPS usa)",
     )
     parser.add_argument("--duration", type=float, default=None, help="segundos rodando (padrão: para sempre)")
-    args = parser.parse_args()
+    return parser.parse_args(argv)
 
-    client = None
-    if not args.dry_run:
-        client = mqtt.Client()
-        if args.username:
-            client.username_pw_set(args.username, args.password)
-        if not args.no_tls:
-            client.tls_set()
-        client.connect(args.host, args.port)
-        client.loop_start()
+
+def build_client(args):
+    """
+    Constroi e conecta o client MQTT conforme os argumentos, ou retorna
+    None em modo --dry-run (nenhuma conexão de rede é feita nesse caso).
+    Extraído do main() pra ser testável sem precisar de um broker real --
+    os testes substituem mqtt.Client por um mock antes de chamar isso.
+    """
+    if args.dry_run:
+        return None
+
+    client = mqtt.Client()
+    if args.username:
+        client.username_pw_set(args.username, args.password)
+    if not args.no_tls:
+        client.tls_set()
+    client.connect(args.host, args.port)
+    client.loop_start()
+    return client
+
+
+def main():
+    args = parse_args()
+    client = build_client(args)
 
     destination = "(dry-run)" if args.dry_run else f"-> {args.host}:{args.port}"
     print(f"Publicando no tópico '{MQTT_TOPIC}' a {PUBLISH_HZ}Hz {destination}")

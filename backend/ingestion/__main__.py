@@ -26,9 +26,7 @@ def _make_real_influx_writer(args):
     return make_influx_writer(write_api, bucket=args.influx_bucket, org=args.influx_org)
 
 
-def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Serviço de ingestão MQTT -> InfluxDB")
     parser.add_argument("--dry-run", action="store_true", help="imprime em vez de gravar no InfluxDB")
     parser.add_argument("--host", default="localhost")
@@ -40,11 +38,25 @@ def main():
     parser.add_argument("--influx-token")
     parser.add_argument("--influx-org", default="fsae")
     parser.add_argument("--influx-bucket", default="telemetria")
-    args = parser.parse_args()
+    return parser.parse_args(argv)
 
-    writer = _dry_run_writer if args.dry_run else _make_real_influx_writer(args)
-    on_message = make_on_message(writer=writer)
 
+def build_writer(args):
+    """
+    Retorna o writer que grava (ou imprime, em --dry-run) cada InfluxPoint.
+    Extraído do main() pra ser testável sem depender de um InfluxDB real.
+    """
+    if args.dry_run:
+        return _dry_run_writer
+    return _make_real_influx_writer(args)
+
+
+def build_mqtt_client(args, on_message):
+    """
+    Constroi, autentica e conecta o client MQTT, já assinando o tópico de
+    telemetria. Extraído do main() pra ser testável sem broker real -- os
+    testes substituem mqtt.Client por um mock antes de chamar isso.
+    """
     client = mqtt.Client()
     if args.username:
         client.username_pw_set(args.username, args.password)
@@ -53,6 +65,16 @@ def main():
     client.on_message = on_message
     client.connect(args.host, args.port)
     client.subscribe(TOPIC, qos=1)
+    return client
+
+
+def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    args = parse_args()
+    writer = build_writer(args)
+    on_message = make_on_message(writer=writer)
+    client = build_mqtt_client(args, on_message)
 
     destination = "(dry-run)" if args.dry_run else args.influx_url
     print(f"Assinando '{TOPIC}' em {args.host}:{args.port}, gravando em {destination}")

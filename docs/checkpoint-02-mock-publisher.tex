@@ -1,0 +1,252 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{parskip}
+\usepackage{titlesec}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!50!black,
+    citecolor=blue!50!black,
+}
+
+\definecolor{codebg}{RGB}{245,245,245}
+\definecolor{codegray}{RGB}{110,110,110}
+\definecolor{codegreen}{RGB}{0,110,0}
+\definecolor{codeblue}{RGB}{30,80,180}
+
+\lstdefinestyle{code}{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{codeblue},
+    commentstyle=\color{codegray}\itshape,
+    stringstyle=\color{codegreen},
+    breaklines=true,
+    breakatwhitespace=false,
+    frame=single,
+    rulecolor=\color{black!15},
+    numbers=left,
+    numberstyle=\tiny\color{codegray},
+    xleftmargin=1.8em,
+    framexleftmargin=1.5em,
+    showstringspaces=false,
+    tabsize=2,
+}
+\lstset{style=code}
+
+\titleformat{\section}{\normalfont\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{1em}{}
+
+\sloppy
+
+\title{\textbf{TelemetriaMqtt v2 --- Checkpoint 2} \\[4pt]
+\large Script mock de publicação MQTT: simulando o ESP32 sem hardware}
+\author{Projeto de Telemetria FSAE}
+\date{16 de setembro de 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent Este documento detalha o segundo checkpoint do projeto de reconstrução do sistema de telemetria da equipe: um script em Python que simula o comportamento de publicação MQTT do futuro firmware do ESP32, permitindo desenvolver e testar todo o restante do backend (broker, ingestão, dashboards) antes mesmo de o hardware estar em mãos. O checkpoint fixa também o contrato de dados (tópico MQTT e formato do JSON) que será usado pelo firmware real nos checkpoints finais do projeto.
+\end{abstract}
+
+\tableofcontents
+
+\section{Contexto e objetivo}
+
+Um dos desafios identificados no planejamento do projeto foi a dependência de hardware físico (ESP32, transceiver CAN) e de acesso ao carro da equipe para poder desenvolver e testar o restante do sistema --- broker MQTT, script de ingestão, banco de dados de série temporal e dashboards. Esperar por esses recursos físicos atrasaria todo o desenvolvimento do backend.
+
+A solução adotada (decidida em conversa dedicada durante o levantamento de requisitos, documentada no \texttt{SCOPE.md}) foi separar dois problemas diferentes:
+
+\begin{enumerate}
+    \item Validar a camada \textbf{física} do CAN (leitura real de quadros do barramento do carro através do transceiver) --- isso só pode ser feito com hardware real, e fica propositalmente fora do escopo deste checkpoint.
+    \item Validar a camada \textbf{lógica} do sistema (o que acontece depois que um dado chega via MQTT) --- isso pode ser simulado inteiramente em software, sem nenhum hardware.
+\end{enumerate}
+
+Este checkpoint resolve o segundo ponto: um script Python, rodando no computador do desenvolvedor, que \textit{finge ser} o ESP32 do ponto de vista do broker MQTT --- publicando exatamente o mesmo formato de dados que o firmware real vai publicar no futuro (checkpoints 8 e 9).
+
+\section{O contrato de dados: tópico e formato}
+
+Antes de escrever qualquer código, foi necessário decidir \textbf{como} os dados seriam publicados --- essa decisão é o contrato entre o firmware (futuro) e todo o resto do sistema (broker, ingestão, dashboards), e precisa ser definida uma vez só, de forma que o mock e o firmware real sejam intercambiáveis sem exigir mudança em nenhum outro componente.
+
+\subsection{Sinais e frequências}
+
+O ponto de partida foram os 20 sinais de telemetria do carro (RPM, temperatura do motor, correntes de diversos circuitos do PDM, etc.), já mapeados em uma tabela de payloads CAN definida em checkpoint de planejamento anterior (seção "Plano de payloads" do \texttt{SCOPE.md}). Cada sinal tem uma frequência de amostragem própria --- 20\,Hz para sinais de dinâmica rápida do motor (RPM, acelerador), até 2\,Hz para sinais lentos (temperatura, estados on/off).
+
+\subsection{Decisão de tópico único e mensagem combinada}
+
+Em vez de um tópico MQTT por sinal, ou de publicar cada quadro CAN individualmente conforme ele chega (o que geraria uma frequência de publicação irregular e uma mensagem incompleta a cada vez), foi decidido:
+
+\begin{itemize}
+    \item \textbf{Um único tópico}: \texttt{telemetria/esp32/data}.
+    \item \textbf{Uma mensagem JSON combinada}, contendo os 20 sinais e um timestamp (\texttt{ts}, em milissegundos), publicada a uma frequência fixa de \textbf{20\,Hz} --- a frequência do sinal mais rápido da tabela.
+    \item Sinais de frequência mais lenta (10, 5 ou 2\,Hz) \textbf{repetem o último valor amostrado} dentro da mensagem, em vez de serem interpolados, reproduzindo fielmente a granularidade real com que esses dados vão chegar do carro (um sinal de 2\,Hz genuinamente só muda a cada 0,5 segundos --- fingir uma transição suave seria uma mentira sobre o dado real).
+\end{itemize}
+
+Essa decisão simplifica o consumo dos dados (qualquer assinante do tópico sempre tem uma visão completa e atualizada de todos os sinais, nunca uma mensagem parcial) e mantém o uso de banda previsível (uma mensagem por tick, sempre no mesmo tamanho aproximado), às custas de publicar valores redundantes para os sinais mais lentos --- uma troca considerada aceitável dado o volume de dados envolvido.
+
+\section{Estrutura de arquivos criada}
+
+\begin{lstlisting}[language=bash,caption={Estrutura do diretório backend/}]
+backend/
+  requirements.txt
+  pytest.ini
+  mock_publisher/
+    __init__.py
+    signal_generator.py
+    publisher.py
+    __main__.py
+  tests/
+    test_signal_generator.py
+    test_publisher.py
+\end{lstlisting}
+
+O código foi dividido deliberadamente em duas responsabilidades separadas: \texttt{signal\_generator.py} contém \textbf{lógica pura} (nenhuma rede, nenhum I/O --- só cálculo), enquanto \texttt{publisher.py} cuida da \textbf{integração} (serialização e publicação). Essa separação é o que torna a lógica de geração de sinais trivialmente testável sem precisar de um broker MQTT de verdade.
+
+\subsection{signal\_generator.py}
+
+Define, para cada um dos 20 sinais, sua frequência de amostragem, faixa de valores plausível e um período de oscilação sintética:
+
+\begin{lstlisting}[language=Python,caption={Trecho de mock\_publisher/signal\_generator.py}]
+SIGNAL_SPECS = {
+    "rpm": {"freq_hz": 20, "kind": "analog",
+            "range": (800.0, 8000.0), "period_s": 6.0},
+    ...
+    "bombaInput": {"freq_hz": 2, "kind": "binary",
+                   "range": (0, 1), "period_s": 4.0},
+    ...
+}
+
+def _snap_to_interval(t: float, freq_hz: float) -> float:
+    interval = 1.0 / freq_hz
+    return math.floor(t / interval) * interval
+
+def snapshot(t: float) -> dict:
+    result = {"ts": int(round(t * 1000))}
+    for name, spec in SIGNAL_SPECS.items():
+        sampled_t = _snap_to_interval(t, spec["freq_hz"])
+        ...
+    return result
+\end{lstlisting}
+
+A função \texttt{\_snap\_to\_interval} é o coração da simulação: em vez de calcular o valor de um sinal diretamente a partir do tempo corrido \texttt{t}, ela primeiro "arredonda" o tempo para baixo até o último múltiplo do intervalo de amostragem daquele sinal específico. Um sinal de 2\,Hz (intervalo de 0,5\,s) avaliado em \texttt{t=0.3} e em \texttt{t=0.49} produz exatamente o mesmo valor, porque os dois instantes caem dentro da mesma janela de 0,5\,s --- reproduzindo o efeito de "degrau" (staircase) que o dado real vai ter.
+
+\subsection{publisher.py}
+
+\begin{lstlisting}[language=Python,caption={mock\_publisher/publisher.py}]
+MQTT_TOPIC = "telemetria/esp32/data"
+
+def publish_snapshot(client, t: float, dry_run: bool = False,
+                      sink=print) -> None:
+    payload = json.dumps(snapshot(t))
+    if dry_run:
+        sink(payload)
+    else:
+        client.publish(MQTT_TOPIC, payload)
+\end{lstlisting}
+
+O parâmetro \texttt{dry\_run} permite rodar o script sem nenhum broker MQTT disponível --- relevante porque, neste checkpoint, o broker (checkpoint 3) ainda não existia. Em vez de publicar, a mensagem é passada para uma função \texttt{sink} (por padrão, \texttt{print}), possibilitando tanto o uso interativo no terminal quanto a captura programática em testes.
+
+\subsection{\_\_main\_\_.py}
+
+Um ponto de entrada de linha de comando (\texttt{python -m mock\_publisher}), com opções para modo dry-run, endereço do broker, credenciais e duração da execução --- detalhado na Seção~\ref{sec:correcao}, onde uma limitação desse arquivo foi encontrada e corrigida no checkpoint seguinte.
+
+\section{Desenvolvimento orientado a testes (TDD)}
+
+Seguindo a metodologia definida para o projeto, os testes foram escritos antes da lógica de geração de sinais estar finalizada, cobrindo o comportamento esperado antes de qualquer execução real.
+
+\subsection{Testes de signal\_generator.py}
+
+Oito testes, cobrindo tanto a estrutura dos dados quanto o comportamento temporal:
+
+\begin{enumerate}[label=\textbf{Teste \arabic*}]
+    \item \texttt{test\_signal\_specs\_cover\_all\_20\_channels} --- garante que a tabela de especificações tem exatamente os 20 canais esperados, nem mais nem menos.
+    \item \texttt{test\_snapshot\_has\_all\_channels\_plus\_timestamp} --- confirma que a função \texttt{snapshot()} retorna exatamente os 20 campos mais \texttt{ts}.
+    \item \texttt{test\_snapshot\_values\_are\_within\_declared\_range} --- avalia \texttt{snapshot()} em vários instantes de tempo e confirma que nenhum valor sai da faixa física declarada (ex: RPM entre 800 e 8000).
+    \item \texttt{test\_binary\_signals\_are\_always\_0\_or\_1} --- confirma que os dois sinais digitais nunca assumem um valor fora de $\{0, 1\}$.
+    \item \texttt{test\_slow\_tier\_value\_is\_held\_constant\_within\_its\_own\_interval} --- confirma o comportamento de "degrau": dois instantes dentro da mesma janela de amostragem de um sinal lento produzem o mesmo valor.
+    \item \texttt{test\_slow\_tier\_value\_changes\_after\_crossing\_its\_interval\_boundary} --- complementa o teste anterior: ao cruzar a fronteira do intervalo, o valor \textbf{precisa} mudar (sem esse teste, uma implementação quebrada que sempre retornasse o mesmo número fixo passaria no teste anterior).
+    \item \texttt{test\_fast\_tier\_changes\_more\_often\_than\_slow\_tier\_over\_one\_second} --- checagem cruzada entre um sinal de 20\,Hz e um de 2\,Hz: em um segundo de tempo simulado, o sinal rápido precisa mostrar muito mais valores distintos que o lento.
+    \item \texttt{test\_timestamp\_is\_monotonic\_ms\_integer} --- confirma que o campo \texttt{ts} é sempre um inteiro em milissegundos (compatível com o que \texttt{millis()} produziria no firmware real do ESP32), nunca um número de ponto flutuante.
+\end{enumerate}
+
+\subsection{Testes de publisher.py}
+
+Três testes, usando um \textit{cliente MQTT falso} (\texttt{unittest.mock.MagicMock}) no lugar de uma conexão de rede real --- decisão deliberada, já que neste checkpoint não existia nenhum broker MQTT disponível para testar contra:
+
+\begin{enumerate}[label=\textbf{Teste \arabic*}]
+    \item \texttt{test\_publish\_snapshot\_calls\_client\_publish\_with\_correct\_topic} --- confirma que a função chama \texttt{client.publish} exatamente uma vez, com o tópico correto.
+    \item \texttt{test\_publish\_snapshot\_payload\_is\_valid\_json\_with\_expected\_keys} --- confirma que o payload publicado é uma string JSON válida, e que o campo \texttt{ts} corresponde corretamente ao tempo passado (ex: \texttt{t=2.5} produz \texttt{ts=2500}).
+    \item \texttt{test\_publish\_snapshot\_dry\_run\_does\_not\_touch\_client} --- confirma que, em modo dry-run, o cliente MQTT (mesmo que fosse um objeto real) nunca é tocado --- só a função \texttt{sink} alternativa é chamada.
+\end{enumerate}
+
+\subsection{Resultado da execução}
+
+\begin{lstlisting}[caption={Saída real de \texttt{pytest -v}}]
+tests/test_publisher.py::test_publish_snapshot_calls_client_publish_with_correct_topic PASSED
+tests/test_publisher.py::test_publish_snapshot_payload_is_valid_json_with_expected_keys PASSED
+tests/test_publisher.py::test_publish_snapshot_dry_run_does_not_touch_client PASSED
+tests/test_signal_generator.py::test_signal_specs_cover_all_20_channels PASSED
+tests/test_signal_generator.py::test_snapshot_has_all_channels_plus_timestamp PASSED
+tests/test_signal_generator.py::test_snapshot_values_are_within_declared_range PASSED
+tests/test_signal_generator.py::test_binary_signals_are_always_0_or_1 PASSED
+tests/test_signal_generator.py::test_slow_tier_value_is_held_constant_within_its_own_interval PASSED
+tests/test_signal_generator.py::test_slow_tier_value_changes_after_crossing_its_interval_boundary PASSED
+tests/test_signal_generator.py::test_fast_tier_changes_more_often_than_slow_tier_over_one_second PASSED
+tests/test_signal_generator.py::test_timestamp_is_monotonic_ms_integer PASSED
+
+11 passed in 0.02s
+\end{lstlisting}
+
+Todos os 11 testes passaram na primeira execução completa, com o conjunto inteiro rodando em 0,02 segundos --- consequência direta de \texttt{signal\_generator.py} não depender de rede, disco ou qualquer recurso externo lento.
+
+\section{Validação manual: rodando de verdade}
+
+Além dos testes automatizados, o script foi executado de fato em modo dry-run, para observar visualmente o comportamento de "degrau" descrito na Seção~4.1:
+
+\begin{lstlisting}[caption={Saída real de \texttt{python -m mock\_publisher --dry-run}}]
+{"ts": 0, "rpm": 4400.0, ..., "engineTemp": 90.0, "airTemp": 30.0, ...}
+{"ts": 50, "rpm": 4588.41, ..., "engineTemp": 90.0, "airTemp": 30.0, ...}
+{"ts": 100, "rpm": 4776.3, ..., "engineTemp": 90.0, "airTemp": 30.0, ...}
+{"ts": 150, "rpm": 4963.16, ..., "engineTemp": 90.0, "airTemp": 30.0, ...}
+{"ts": 201, "rpm": 5148.48, "gpsSpeed": 95.65, ..., "engineTemp": 90.0, ...}
+\end{lstlisting}
+
+O comportamento observado confirma exatamente o design: o campo \texttt{rpm} (20\,Hz) muda a cada mensagem (a cada 50\,ms); o campo \texttt{gpsSpeed} (10\,Hz) só muda a cada duas mensagens; e o campo \texttt{engineTemp} (2\,Hz) permanece constante em \texttt{90.0} por toda a janela observada, exatamente como o sinal equivalente vai se comportar quando vier do carro real.
+
+\section{Comentários explicativos nos testes}
+
+Após a primeira versão dos testes, foi solicitada uma revisão com comentários explicando o propósito de cada teste individualmente --- não apenas o nome da função, mas o raciocínio por trás dela. Cada teste em \texttt{test\_signal\_generator.py} e \texttt{test\_publisher.py} recebeu um comentário curto explicando o que ele verifica e, quando relevante, por que ele existe separado de outro teste semelhante (como o par "valor congelado dentro do intervalo" / "muda ao cruzar o intervalo", onde um teste sozinho não seria suficiente para pegar uma implementação incorreta).
+
+\section{Regra de processo estabelecida a partir deste checkpoint}
+\label{sec:regra-testes}
+
+Durante a revisão deste checkpoint, foi estabelecida uma regra de processo que passou a valer para todo o restante do projeto (registrada em \texttt{CLAUDE.md}): \textbf{testes, uma vez escritos, são intocáveis}. Nunca devem ser apagados ou modificados para "fazer passar" --- se um teste falha, o problema está na implementação, não no teste. Essa regra existe porque é exatamente o que torna a abordagem de TDD do projeto uma garantia real de qualidade, em vez de uma formalidade contornável.
+
+\section{Resumo do que ficou pronto}
+
+\begin{itemize}
+    \item Contrato de dados definido e documentado: tópico único, mensagem JSON combinada a 20\,Hz, com "degrau" nos sinais mais lentos.
+    \item Script mock completo (\texttt{backend/mock\_publisher/}), capaz de rodar tanto em modo dry-run (sem broker) quanto conectado a um broker MQTT real.
+    \item 11 testes automatizados, cobrindo tanto a lógica de geração de sinais quanto a integração de publicação.
+    \item Validação manual confirmando visualmente o comportamento de amostragem por camadas de frequência.
+    \item Regra de processo estabelecida: testes nunca são apagados ou alterados para acomodar uma implementação incorreta.
+\end{itemize}
+
+\section{Próximos passos}
+
+O checkpoint seguinte (checkpoint 3, já concluído e documentado separadamente) coloca um broker MQTT real no ar via Docker, permitindo que este script mock finalmente publique para um destino de verdade, em vez de apenas para a tela do terminal.
+
+\end{document}

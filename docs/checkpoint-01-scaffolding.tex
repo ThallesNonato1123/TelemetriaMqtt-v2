@@ -1,0 +1,270 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{parskip}
+\usepackage{titlesec}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!50!black,
+    citecolor=blue!50!black,
+}
+
+\definecolor{codebg}{RGB}{245,245,245}
+\definecolor{codegray}{RGB}{110,110,110}
+\definecolor{codegreen}{RGB}{0,110,0}
+\definecolor{codeblue}{RGB}{30,80,180}
+
+\lstdefinestyle{code}{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{codeblue},
+    commentstyle=\color{codegray}\itshape,
+    stringstyle=\color{codegreen},
+    breaklines=true,
+    breakatwhitespace=false,
+    frame=single,
+    rulecolor=\color{black!15},
+    numbers=left,
+    numberstyle=\tiny\color{codegray},
+    xleftmargin=1.8em,
+    framexleftmargin=1.5em,
+    showstringspaces=false,
+    tabsize=2,
+}
+\lstset{style=code}
+
+\titleformat{\section}{\normalfont\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{1em}{}
+
+\sloppy
+
+\title{\textbf{TelemetriaMqtt v2 --- Checkpoint 1} \\[4pt]
+\large Scaffolding do repositório: firmware PlatformIO, template de credenciais e harness de testes}
+\author{Projeto de Telemetria FSAE}
+\date{16 de setembro de 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent Este documento detalha o primeiro checkpoint do projeto de reconstrução do sistema de telemetria da equipe: a criação da estrutura inicial do repositório, com foco no firmware do ESP32. O checkpoint estabelece o projeto PlatformIO com dois ambientes de build (um para o hardware real, outro para testes sem hardware), o template de credenciais que nunca é versionado, e a validação de que toda a cadeia de ferramentas (compilação e testes) funciona de ponta a ponta antes de qualquer lógica de negócio ser escrita.
+\end{abstract}
+
+\tableofcontents
+
+\section{Contexto e objetivo}
+
+Este é o primeiro checkpoint de um projeto reconstruído do zero a partir do TCC anterior da equipe (repositório antigo preservado, sem reaproveitamento de código, em \texttt{\textasciitilde/Desktop/TelemetriaMqtt}). Antes de escrever qualquer lógica --- leitura de CAN, publicação MQTT, etc. --- o objetivo deste checkpoint é puramente de \textbf{scaffolding}: montar o esqueleto do repositório de forma que exista, desde o primeiro commit, uma forma de compilar o firmware e uma forma de rodar testes automatizados, seguindo a metodologia de TDD definida para o projeto (documentada em \texttt{CLAUDE.md}).
+
+A decisão de arquitetura tomada antes deste checkpoint (registrada em \texttt{SCOPE.md}) foi usar um único ESP32 (em vez da dupla Arduino Uno + ESP32 do projeto anterior) com PlatformIO como ferramenta de build, em vez da IDE Arduino tradicional.
+
+\section{Por que PlatformIO em vez da IDE Arduino}
+
+A IDE Arduino tradicional (\texttt{.ino}, compilação feita clicando em um botão) não oferece de forma nativa:
+
+\begin{itemize}
+    \item Múltiplos ambientes de build a partir do mesmo código-fonte (por exemplo, um ambiente para o hardware real e outro só para rodar testes no computador).
+    \item Um framework de testes unitários integrado.
+    \item Compilação via linha de comando, necessária para automatizar validações (rodar o build como parte do fluxo de trabalho, sem depender de abrir uma janela gráfica).
+\end{itemize}
+
+O PlatformIO resolve os três pontos através do arquivo \texttt{platformio.ini}, que declara ambientes (\textit{environments}) nomeados, cada um com sua própria plataforma de hardware, framework e conjunto de bibliotecas.
+
+\subsection{Instalação}
+
+O PlatformIO não estava pré-instalado no ambiente de desenvolvimento. Foi instalado via \texttt{pip}, isolado no diretório do usuário:
+
+\begin{lstlisting}[language=bash,caption={Instalação do PlatformIO}]
+pip3 install --user platformio
+\end{lstlisting}
+
+Isso adiciona o executável \texttt{pio} a \texttt{\textasciitilde/.local/bin}, sem exigir privilégios de administrador nem afetar o Python do sistema.
+
+\section{Estrutura de arquivos criada}
+
+\begin{lstlisting}[language=bash,caption={Estrutura do diretório firmware/}]
+firmware/
+  platformio.ini
+  src/
+    main.cpp
+  include/
+    secrets.h.example
+  test/
+    test_scaffolding/
+      test_main.cpp
+\end{lstlisting}
+
+\subsection{platformio.ini}
+
+\begin{lstlisting}[language=bash,caption={firmware/platformio.ini}]
+[env:esp32dev]
+platform = espressif32
+board = esp32dev
+framework = arduino
+monitor_speed = 115200
+
+[env:native]
+platform = native
+test_framework = unity
+build_flags = -std=c++17
+\end{lstlisting}
+
+Dois ambientes com propósitos completamente diferentes:
+
+\begin{itemize}
+    \item \texttt{esp32dev} --- ambiente de produção. Usa o framework Arduino sobre a plataforma \texttt{espressif32} (fabricante do ESP32), gerando um binário que só roda no hardware real.
+    \item \texttt{native} --- ambiente de testes. Compila e executa \textbf{no próprio computador de desenvolvimento}, usando o compilador nativo do sistema operacional em vez de um cross-compiler para o ESP32. Usa o framework de testes \textit{Unity} (biblioteca padrão de testes em C para ambientes embarcados). A partir do checkpoint 8, quando o parser do protocolo CAN for implementado, esse ambiente permitirá testar a lógica de decodificação sem precisar de um ESP32 conectado por USB a cada execução de teste.
+\end{itemize}
+
+Essa separação é o que possibilita cumprir o requisito de TDD do projeto mesmo em código embarcado: lógica pura (parsing, cálculos, formatação) pode ser testada no ambiente \texttt{native}, rápido e sem hardware; só o código que de fato depende de periféricos físicos (leitura do barramento CAN, WiFi) precisa ser validado no hardware real.
+
+\subsection{src/main.cpp}
+
+\begin{lstlisting}[language=Cpp,caption={firmware/src/main.cpp}]
+#include <Arduino.h>
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("TelemetriaMqtt v2 - firmware placeholder");
+}
+
+void loop() {
+}
+\end{lstlisting}
+
+Um placeholder mínimo, deliberadamente sem nenhuma lógica --- serve apenas para confirmar que o ambiente \texttt{esp32dev} compila com sucesso antes de qualquer funcionalidade ser adicionada nos próximos checkpoints (8 e 9).
+
+\subsection{include/secrets.h.example}
+
+\begin{lstlisting}[language=Cpp,caption={firmware/include/secrets.h.example}]
+#pragma once
+
+// Copie este arquivo para secrets.h (gitignored) e preencha com
+// valores reais. Nunca commitar secrets.h.
+
+#define WIFI_SSID "SSID_AQUI"
+#define WIFI_PASSWORD "SENHA_AQUI"
+
+#define MQTT_BROKER_HOST "seu-broker.exemplo.com"
+#define MQTT_BROKER_PORT 8883
+#define MQTT_USERNAME "usuario-do-dispositivo"
+#define MQTT_PASSWORD "senha-do-dispositivo"
+#define MQTT_TOPIC "telemetria/esp32"
+\end{lstlisting}
+
+Esse arquivo existe por uma razão concreta identificada durante o levantamento de requisitos do projeto: o repositório do TCC anterior tinha credenciais reais (senha de WiFi e credenciais do broker MQTT) escritas diretamente no código-fonte, e esse repositório foi publicado publicamente no GitHub --- expondo essas credenciais. Para não repetir o problema, o padrão adotado desde o primeiro commit deste projeto é: um arquivo \texttt{.example} versionado, servindo de modelo, e o arquivo real (\texttt{secrets.h}, sem o sufixo) listado no \texttt{.gitignore}, nunca chegando a existir na história do repositório.
+
+\subsection{test/test\_scaffolding/test\_main.cpp}
+
+\begin{lstlisting}[language=Cpp,caption={firmware/test/test\_scaffolding/test\_main.cpp}]
+#include <unity.h>
+
+// Prova de que o harness de testes nativo (sem hardware) esta
+// funcionando. Passa a valer pra logica de verdade a partir do
+// checkpoint 8 (parser CAN).
+void test_native_test_harness_runs(void) {
+  TEST_ASSERT_EQUAL(4, 2 + 2);
+}
+
+int main(int argc, char **argv) {
+  UNITY_BEGIN();
+  RUN_TEST(test_native_test_harness_runs);
+  return UNITY_END();
+}
+\end{lstlisting}
+
+Um teste deliberadamente trivial (\texttt{2 + 2 == 4}). Seu único propósito não é validar lógica de negócio --- que ainda não existe --- mas provar que toda a cadeia de ferramentas do ambiente \texttt{native} funciona: o PlatformIO consegue baixar e linkar a biblioteca Unity, compilar um executável nativo, rodá-lo, e reportar corretamente um resultado \texttt{PASSED}. Detectar um problema de configuração aqui, com um teste trivial, é muito mais barato do que descobrir esse mesmo problema mais tarde, junto com a primeira lógica real a ser testada.
+
+\subsection{.gitignore}
+
+\begin{lstlisting}[language=bash,caption={.gitignore (raiz do projeto)}]
+# PlatformIO
+firmware/.pio/
+firmware/include/secrets.h
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# OS / editor
+.DS_Store
+*.swp
+\end{lstlisting}
+
+Além de \texttt{secrets.h}, o diretório \texttt{firmware/.pio/} (onde o PlatformIO baixa toolchains, bibliotecas e coloca os artefatos de build) também é ignorado --- são vários gigabytes de arquivos gerados automaticamente, que não fazem sentido versionar.
+
+\section{Validação: rodando de verdade}
+
+Consistente com a metodologia do projeto (nenhum checkpoint é considerado fechado só por os arquivos existirem --- é preciso rodar e confirmar o resultado), os dois ambientes foram executados e o resultado observado diretamente, não apenas assumido.
+
+\subsection{Build do ambiente de produção}
+
+\begin{lstlisting}[caption={Saída de \texttt{pio run -e esp32dev} (resumida)}]
+Compiling .pio/build/esp32dev/FrameworkArduino/...
+Linking .pio/build/esp32dev/firmware.elf
+Checking size .pio/build/esp32dev/firmware.elf
+RAM:   [=         ]   6.6% (used 21464 bytes from 327680 bytes)
+Flash: [==        ]  20.4% (used 267057 bytes from 1310720 bytes)
+Building .pio/build/esp32dev/firmware.bin
+========================= [SUCCESS] Took 49.42 seconds =========================
+\end{lstlisting}
+
+O binário foi gerado com sucesso, usando apenas 6,6\% da RAM e 20,4\% da memória flash disponíveis no ESP32 --- números baixos porque o firmware ainda é só o placeholder, mas confirmam que a cadeia de compilação (download do framework Arduino para ESP32, compilador, linker, geração da imagem \texttt{.bin}) está correta e funcional.
+
+\subsection{Testes do ambiente nativo}
+
+\begin{lstlisting}[caption={Saída de \texttt{pio test -e native}}]
+Processing test_scaffolding in native environment
+Building...
+Testing...
+test/test_scaffolding/test_main.cpp:11: test_native_test_harness_runs [PASSED]
+-------------- native:test_scaffolding [PASSED] Took 0.47 seconds --------------
+1 test cases: 1 succeeded in 0.475 seconds
+\end{lstlisting}
+
+O teste trivial passou, confirmando que o harness de testes (download da biblioteca Unity, compilação nativa, execução, relatório de resultado) está pronto para receber testes de lógica real nos próximos checkpoints.
+
+\subsection{Verificação do .gitignore}
+
+Como parte da mesma validação, foi confirmado que o \texttt{.gitignore} de fato exclui os arquivos sensíveis e gerados, usando o comando de diagnóstico do próprio Git:
+
+\begin{lstlisting}[caption={Verificação do .gitignore}]
+$ git check-ignore -v firmware/.pio/build firmware/include/secrets.h
+.gitignore:2:firmware/.pio/          firmware/.pio/build
+.gitignore:3:firmware/include/secrets.h  firmware/include/secrets.h
+\end{lstlisting}
+
+Ambos os caminhos são corretamente ignorados pela regra correspondente do arquivo.
+
+\section{Resumo do que ficou pronto}
+
+\begin{itemize}
+    \item Projeto PlatformIO com dois ambientes: \texttt{esp32dev} (build real) e \texttt{native} (testes sem hardware).
+    \item Firmware placeholder compilando com sucesso para o ESP32.
+    \item Template de credenciais (\texttt{secrets.h.example}) versionado; o arquivo real nunca chega a ser rastreado pelo Git.
+    \item Harness de testes unitários (Unity) funcionando ponta a ponta, pronto para receber testes de lógica real.
+    \item \texttt{.gitignore} validado na prática, não apenas escrito.
+\end{itemize}
+
+\section{Próximos passos}
+
+O checkpoint seguinte (checkpoint 2, conforme \texttt{CLAUDE.md}) muda de área: em vez do firmware, cria o script mock de publicação MQTT em Python, que simula o comportamento do ESP32 sem depender de nenhum hardware, permitindo que o desenvolvimento do restante do backend (broker, ingestão, dashboards) avance em paralelo à obtenção física do ESP32 e do transceiver CAN.
+
+\end{document}

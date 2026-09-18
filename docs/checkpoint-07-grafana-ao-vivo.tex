@@ -1,0 +1,244 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{parskip}
+\usepackage{titlesec}
+
+\hypersetup{colorlinks=true, linkcolor=blue!50!black, urlcolor=blue!50!black, citecolor=blue!50!black}
+
+\definecolor{codebg}{RGB}{245,245,245}
+\definecolor{codegray}{RGB}{110,110,110}
+\definecolor{codegreen}{RGB}{0,110,0}
+\definecolor{codeblue}{RGB}{30,80,180}
+
+\lstdefinestyle{code}{
+    backgroundcolor=\color{codebg}, basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{codeblue}, commentstyle=\color{codegray}\itshape,
+    stringstyle=\color{codegreen}, breaklines=true, breakatwhitespace=false,
+    frame=single, rulecolor=\color{black!15}, numbers=left,
+    numberstyle=\tiny\color{codegray}, xleftmargin=1.8em, framexleftmargin=1.5em,
+    showstringspaces=false, tabsize=2,
+    literate=
+      {á}{{\'a}}1 {à}{{\`a}}1 {ã}{{\~a}}1 {â}{{\^a}}1
+      {é}{{\'e}}1 {ê}{{\^e}}1 {í}{{\'i}}1
+      {ó}{{\'o}}1 {õ}{{\~o}}1 {ô}{{\^o}}1 {ú}{{\'u}}1
+      {ç}{{\c c}}1 {Á}{{\'A}}1 {É}{{\'E}}1 {Í}{{\'I}}1
+      {Ó}{{\'O}}1 {Ú}{{\'U}}1 {Ã}{{\~A}}1 {Õ}{{\~O}}1
+      {Ç}{{\c C}}1 {°}{{\textdegree}}1,
+}
+\lstset{style=code}
+
+\titleformat{\section}{\normalfont\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{1em}{}
+
+\sloppy
+
+\title{\textbf{TelemetriaMqtt v2 --- Checkpoint 7} \\[4pt]
+\large Dashboard Grafana --- caminho ao vivo}
+\author{Projeto de Telemetria FSAE}
+\date{18 de setembro de 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent Este documento detalha o sétimo checkpoint do projeto: o painel \emph{ao vivo} do Grafana, que mostra a telemetria assim que ela chega ao broker MQTT, sem passar pelo InfluxDB. Usa o plugin \texttt{grafana-mqtt-datasource} e o Grafana Live, provisionados inteiramente como código. O documento também registra o que foi descoberto na prática sobre o plugin (inclusive uma armadilha que custou uma investigação) e, com a mesma clareza, o que \textbf{não} foi validado automaticamente.
+\end{abstract}
+
+\tableofcontents
+
+\section{Contexto e objetivo}
+
+A arquitetura (\texttt{SCOPE.md}) tem dois caminhos deliberadamente separados. O \textbf{histórico} (checkpoints 4 a 6) passa por ingestão e InfluxDB e serve para análise pós-treino. O \textbf{ao vivo} (este checkpoint) serve o pit/box: o Grafana assina o tópico MQTT diretamente e empurra os valores para o navegador, sem polling. Isso elimina o limite de refresh de cerca de 5 segundos de um painel que consulta banco, e faz o painel ao vivo continuar funcionando mesmo com o InfluxDB fora do ar.
+
+\begin{lstlisting}[caption={Caminho ao vivo (trecho da arquitetura)}]
+mock publisher / ESP32 --> Mosquitto --> plugin MQTT (dentro do Grafana)
+                                              |
+                                        Grafana Live
+                                              |  WebSocket
+                                              v
+                                         navegador (painel)
+\end{lstlisting}
+
+O plugin é, na prática, um cliente MQTT que roda \emph{dentro} do Grafana: conecta no broker com o usuário \texttt{telemetria\_reader} (somente leitura, pela ACL do checkpoint 3), assina o tópico \texttt{telemetria/esp32/data} e converte cada mensagem JSON em linhas de um \emph{data frame}.
+
+\section{O que foi descoberto antes de escrever os testes}
+
+Antes dos testes, foi feito um \textbf{experimento descartável} (\emph{spike}): um Grafana e um Mosquitto temporários, montados à mão, só para descobrir como o plugin realmente se comporta. Nada desse experimento foi versionado; os containers foram removidos e o que importa virou os testes e a implementação. Ele foi necessário porque não dá para escrever um teste correto de algo cujo contrato ainda se desconhece: o formato do nome do canal Live, por exemplo, não está documentado de forma que se possa testar sem um navegador.
+
+\begin{center}
+\begin{tabularx}{\textwidth}{lX}
+\toprule
+\textbf{Achado} & \textbf{Detalhe} \\
+\midrule
+Compatibilidade & Plugin 1.3.7, assinatura \texttt{valid}, exige Grafana $\geq$ 11 (usamos o 13.0.2). \\
+Instalação & \texttt{GF\_INSTALL\_PLUGINS} está deprecado no Grafana 13; o recomendado é \texttt{GF\_PLUGINS\_PREINSTALL\_SYNC}, que bloqueia a subida até instalar. \\
+Configuração & \texttt{jsonData.uri}, \texttt{jsonData.username} e \texttt{secureJsonData.password}. \\
+Query & Só tem o campo \texttt{topic}, enviado em \emph{base64 URL-safe} sem padding (restrição de caracteres dos canais Live). \\
+Nome do canal & \texttt{ds/<uid>/<intervalo>/<tópico em base64>/<streamingKey>}, devolvido pela query em \texttt{meta.channel}. \\
+Formato do frame & Uma coluna \texttt{Time} mais \textbf{uma coluna por chave do JSON} (\texttt{ts}, \texttt{rpm}, \dots), todas numéricas. \\
+Agrupamento & O plugin junta as mensagens recebidas e só empurra um frame a cada \emph{intervalo}; esse intervalo é o piso da latência. \\
+Health check & \texttt{POST /api/datasources/uid/<uid>/health} abre uma conexão MQTT de verdade e devolve \texttt{status} \texttt{OK} ou \texttt{ERROR} com a causa. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{A armadilha do prefixo do canal}
+
+A primeira tentativa de assinar o canal pelo WebSocket falhou com \texttt{namespace does not reference a valid org ID}. Prefixando o canal com \texttt{1/} (o ID da organização), a assinatura foi \textbf{aceita sem erro} (\texttt{"subscribe":\{\}}), mas nenhum dado chegava, nem mesmo o stream de teste nativo do Grafana. O log de debug mostrou o motivo: o Grafana 13 publica os frames em \texttt{default/ds/...}, e o \texttt{default} é o namespace da organização 1. Assinar \texttt{1/ds/...} entra num canal diferente, que fica mudo para sempre e sem nenhum erro. Com o prefixo \texttt{default/}, os dados passaram a chegar imediatamente. O mesmo cliente serviu para o stream nativo e para o MQTT, o que descartou a hipótese de problema no plugin.
+
+\section{Estrutura adicionada}
+
+\begin{lstlisting}[caption={Arquivos novos e alterados}]
+infra/
+  docker-compose.yml                      (grafana: + plugin e MQTT_READER_PASSWORD)
+  .env.example                            (+ MQTT_READER_PASSWORD)
+  requirements-test.txt                   (+ websockets)
+  grafana/
+    generate_live_dashboard.py             (novo)
+    dashboards/ao-vivo.json                (novo, gerado)
+    provisioning/datasources/mqtt.yml      (novo)
+  tests/
+    test_grafana_live.py                   (novo, 6 testes)
+    conftest.py                            (fixture de .env aprende a variável nova)
+    test_docker_compose.py                 (1 linha: ver seção de testes)
+\end{lstlisting}
+
+\subsection{Plugin e senha no docker-compose}
+
+\begin{lstlisting}[caption={Trecho novo do serviço grafana}]
+GF_PLUGINS_PREINSTALL_SYNC: grafana-mqtt-datasource@1.3.7
+MQTT_READER_PASSWORD: ${MQTT_READER_PASSWORD:?defina no infra/.env ...}
+\end{lstlisting}
+
+A versão do plugin é fixada de propósito, para a stack ser reproduzível. O sufixo \texttt{\_SYNC} é essencial: sem ele o Grafana poderia tentar provisionar o datasource antes de o plugin estar instalado. A senha segue o mesmo padrão do InfluxDB: obrigatória (\texttt{:?}) e lida do \texttt{infra/.env}, que não é versionado. \textbf{Atenção operacional}: essa senha precisa ser a mesma cadastrada no \texttt{passwd} do Mosquitto para \texttt{telemetria\_reader}. São dois lugares que o projeto não sincroniza sozinho, por design (nenhuma credencial em arquivo versionado).
+
+\subsection{Datasource}
+
+\begin{lstlisting}[caption={infra/grafana/provisioning/datasources/mqtt.yml}]
+datasources:
+  - name: MQTT
+    uid: mqtt-live
+    type: grafana-mqtt-datasource
+    access: proxy
+    isDefault: false
+    jsonData:
+      uri: tcp://mosquitto:1883
+      username: telemetria_reader
+    secureJsonData:
+      password: $MQTT_READER_PASSWORD
+\end{lstlisting}
+
+\texttt{mosquitto} é o nome do serviço na rede interna do compose. \texttt{isDefault: false} mantém o InfluxDB como datasource padrão. Sem TLS em dev local; na VPS (checkpoint 10) a URI passa a \texttt{tls://}.
+
+\subsection{Dashboard gerado por script}
+
+O dashboard \texttt{telemetria-ao-vivo} é gerado por \texttt{generate\_live\_dashboard.py}, que \textbf{importa a lista de painéis do dashboard histórico}. Os dois dashboards têm sempre os mesmos 7 agrupamentos e unidades, com uma única fonte de verdade. Como o plugin devolve um frame único com todos os campos, cada painel usa uma transformação para ficar só com os do seu grupo:
+
+\begin{lstlisting}[language=Python,caption={Painel ao vivo (JSON gerado, simplificado)}]
+{
+  "type": "timeseries",
+  "title": "Temperaturas (°C)",
+  "datasource": {"type": "grafana-mqtt-datasource", "uid": "mqtt-live"},
+  "interval": "200ms",
+  "transformations": [{
+    "id": "filterFieldsByName",
+    "options": {"include": {"names": ["Time", "engineTemp", "airTemp"]}}
+  }],
+  "targets": [{"refId": "A", "topic": "telemetria/esp32/data", ...}]
+}
+\end{lstlisting}
+
+\textbf{Latência.} O campo \texttt{interval} (o ``Min interval'' do painel) é o intervalo de agrupamento do plugin. Foi fixado em 200 ms: 5 atualizações por segundo, cerca de 4 amostras por frame com o dispositivo a 20 Hz. Isso cabe no ``centenas de ms'' do escopo sem sobrecarregar o navegador. Por precaução (\textbf{não medido}), a janela de tempo é fixa em 1 minuto, com o seletor de tempo escondido: o Grafana também deriva o intervalo da janela e da largura do painel, e uma janela muito maior tenderia a espaçar os frames. O plugin não guarda histórico; para isso existe o dashboard histórico.
+
+\section{Testes}
+
+Seis testes novos (\texttt{infra/tests/test\_grafana\_live.py}), todos contra o \textbf{Grafana real do \texttt{docker-compose.yml}}. O Mosquitto sobe com o \texttt{mosquitto.conf} e o \texttt{acl.conf} reais, mas com um \texttt{passwd} descartável criado num diretório temporário e injetado por um arquivo de \emph{override} do compose. Assim os testes não dependem nem tocam no seu \texttt{passwd} e no seu \texttt{.env} reais. Se a stack já estava de pé, ela é restaurada ao final; o que estava parado volta a ficar parado.
+
+\begin{enumerate}[label=\textbf{Teste \arabic*}]
+    \item \texttt{test\_live\_dashboard\_generator\_output\_matches\_committed\_file} --- o JSON versionado é idêntico ao que o gerador produz hoje; evita alguém editar um dos dois à mão.
+    \item \texttt{test\_mqtt\_plugin\_is\_installed\_with\_valid\_signature} --- o plugin está instalado, é do tipo datasource e tem assinatura válida (um plugin não assinado seria recusado).
+    \item \texttt{test\_mqtt\_datasource\_is\_provisioned} --- o datasource existe com tipo, URI e usuário corretos, a senha está configurada (sem expô-la), e o InfluxDB continua sendo o padrão.
+    \item \texttt{test\_mqtt\_datasource\_health\_check\_authenticates\_against\_real\_broker} --- o health check do plugin autentica no Mosquitto de verdade; valida rede entre containers, \texttt{passwd} e a variável de senha numa chamada só.
+    \item \texttt{test\_live\_dashboard\_is\_provisioned\_with\_one\_streaming\_panel\_per\_group} --- o dashboard aparece com 7 painéis do tipo série temporal, todos no datasource MQTT e no tópico do publisher, com intervalo $\leq$ 500 ms. A união dos campos filtrados é \textbf{exatamente} os 20 sinais do \texttt{mock\_publisher}.
+    \item \texttt{test\_mock\_publisher\_message\_reaches\_grafana\_live\_websocket} --- o mais forte do checkpoint. O código de produção do mock publisher publica no broker real; o plugin real, dentro do Grafana real, recebe; e um cliente WebSocket (o mesmo caminho que o navegador usa) assina o canal e recebe os valores. Confere que chegam todos os 20 sinais mais \texttt{Time} e \texttt{ts}, com RPM entre 800 e 8000 e \texttt{ts} entre os valores realmente publicados. O teste publica em loop a 20 Hz, como o dispositivo real, em vez de uma vez só, porque o plugin só assina o tópico no broker depois que o stream começa.
+\end{enumerate}
+
+\subsection{Resultado da execução}
+
+\begin{lstlisting}[caption={Saída real de pytest -v (arquivo novo)}]
+test_grafana_live.py::test_live_dashboard_generator_output_matches_committed_file PASSED
+test_grafana_live.py::test_mqtt_plugin_is_installed_with_valid_signature PASSED
+test_grafana_live.py::test_mqtt_datasource_is_provisioned PASSED
+test_grafana_live.py::test_mqtt_datasource_health_check_authenticates_against_real_broker PASSED
+test_grafana_live.py::test_live_dashboard_is_provisioned_with_one_streaming_panel_per_group PASSED
+test_grafana_live.py::test_mock_publisher_message_reaches_grafana_live_websocket PASSED
+6 passed in 5.29s
+\end{lstlisting}
+
+Suítes completas ao final do checkpoint: infra \textbf{29} testes, backend \textbf{43}, firmware \textbf{1}, todos passando, sem nenhum container sobrando depois da execução.
+
+\subsection{Como o TDD correu de fato}
+
+\begin{enumerate}
+    \item \textbf{Vermelho}: os 6 testes foram escritos antes de qualquer implementação e rodados. Os 6 falharam, cada um pelo motivo certo (gerador inexistente, plugin não instalado, datasource ausente), e não por erro de fixture.
+    \item \textbf{Verde}: implementação do compose, datasource e gerador. Cinco testes passaram de imediato, incluindo o principal.
+    \item \textbf{Um erro do meu próprio teste}: o teste 3 lia \texttt{secureJsonFields} da listagem \texttt{/api/datasources}, que não traz esse campo (só o endpoint de um datasource individual traz). Confirmei isso na API antes de mexer e apenas passei a ler do endpoint certo, com a asserção idêntica. É correção de uma premissa errada sobre a API, num teste que ainda nunca tinha passado, e não mudança de requisito.
+\end{enumerate}
+
+\subsection{Um teste antigo tornou-se obsoleto}
+
+A suíte completa revelou que \texttt{test\_docker\_compose\_up\_starts\_a\_working\_grafana} (checkpoint 6) afirmava \texttt{len(datasources) == 1}. Esse requisito realmente mudou: o checkpoint 7 adiciona legitimamente um segundo datasource. Pela regra do projeto (testes existentes são intocáveis), \textbf{parei e perguntei}, sem alterar o teste por conta própria. A decisão foi a mudança mínima: \texttt{== 1} passou a \texttt{== 2}, e nada mais naquele teste foi alterado.
+
+\section{O que NÃO foi validado automaticamente}
+
+Os testes provam que o backend está correto de ponta a ponta: o dado sai do mock, passa pelo broker e pelo plugin, e chega ao cliente WebSocket do Grafana Live. Eles \textbf{não} provam o que acontece dentro do navegador: se os gráficos efetivamente desenham, e principalmente se a transformação \texttt{filterFieldsByName} funciona sobre dados em \emph{streaming}. Isso não foi verificado, por não haver navegador automatizado neste ambiente. É o ponto mais provável de surpresa e exige a validação manual abaixo.
+
+\section{Validação manual (roteiro)}
+
+\begin{enumerate}
+    \item Coloque a senha real do \texttt{telemetria\_reader} em \texttt{MQTT\_READER\_PASSWORD} no \texttt{infra/.env}. (Se o seu \texttt{.env} é anterior a este checkpoint, os testes já acrescentaram a variável com um valor de teste; troque pelo real.)
+    \item \texttt{cd infra \&\& docker compose up -d}. A primeira subida baixa o plugin, então precisa de internet.
+    \item Em outro terminal, com o venv do backend ativo: \texttt{python -m mock\_publisher -{}-no-tls -{}-port 1883 -{}-username esp32\_telemetria -{}-password <senha>}. O \texttt{-{}-no-tls} e a porta 1883 são necessários porque o publisher assume por padrão TLS na porta 8883, e o broker local do compose não usa TLS.
+    \item Abra \texttt{http://localhost:3000/d/telemetria-ao-vivo} e confirme que os 7 painéis desenham curvas em movimento, com o RPM oscilando entre 800 e 8000.
+    \item Se um painel ficar vazio, a causa mais provável é a transformação não se aplicar ao streaming (hipótese, não confirmada). Nesse caso, a alternativa é esconder os campos por \emph{overrides} em vez de filtrar por nome.
+\end{enumerate}
+
+\section{Pontos de atenção}
+
+\begin{itemize}
+    \item \textbf{Duas fontes para a mesma senha}: \texttt{.env} e \texttt{passwd} do Mosquitto precisam coincidir, senão o painel ao vivo fica sem dados (o health check do datasource mostra o erro de autenticação).
+    \item \textbf{Dependência de rede na primeira subida}: o plugin é baixado do grafana.com. Depois fica no volume \texttt{grafana-data}.
+    \item \textbf{Sessões MQTT órfãs} (lido no código do plugin, não medido): ele conecta com \emph{clean session} desligado e client ID aleatório, então cada reinício do Grafana pode deixar uma sessão persistente no Mosquitto. O custo é desprezível (assinatura QoS 0, sem fila), mas cresce. Se virar problema: fixar o \texttt{clientID} no datasource ou definir \texttt{persistent\_client\_expiration} no broker.
+    \item \textbf{Escopo de segurança}: o Grafana só lê. A ACL do \texttt{telemetria\_reader} não permite publicar, e o plugin também recusa publicações pelo próprio Live.
+\end{itemize}
+
+\section{Nota sobre metodologia}
+
+O checkpoint 6 registrou uma inversão de TDD (infraestrutura primeiro, testes depois) e prometeu que, a partir do 7, o teste voltaria a vir primeiro. Foi o que aconteceu: vermelho, depois verde, como descrito acima. A única ressalva honesta é o experimento descartável descrito no início. Ele veio antes dos testes, mas serviu para descobrir o contrato do plugin, não para construir a implementação, e nenhum arquivo dele foi versionado.
+
+Por decisão de metodologia, toda escolha de tecnologia foi registrada no \texttt{SCOPE.md} na seção ``Stack tecnológico'': o plugin \texttt{grafana-mqtt-datasource} 1.3.7 e a biblioteca \texttt{websockets} dos testes. O \texttt{CLAUDE.md} ganhou o comando de regeneração do dashboard ao vivo e a nota operacional da nova variável.
+
+\section{Resumo do que ficou pronto}
+
+\begin{itemize}
+    \item Plugin MQTT do Grafana instalado por versão fixada, com o datasource provisionado como código e credenciais só por variável de ambiente.
+    \item Dashboard ao vivo de 7 painéis, gerado por script a partir da mesma lista do histórico, atualizando a cada 200 ms.
+    \item Prova automatizada, contra Grafana e Mosquitto reais, de que a mensagem publicada chega ao Grafana Live pelo mesmo caminho que o navegador usa.
+    \item Contrato do canal Live documentado, incluindo a armadilha do prefixo \texttt{1/} versus \texttt{default/}.
+\end{itemize}
+
+\section{Próximos passos}
+
+Este checkpoint espera a sua revisão. Se aprovado, o commit fecha o checkpoint com a tag \texttt{v0.7.0}. O próximo é o \textbf{checkpoint 8}: firmware do ESP32, com o parser CAN (TWAI) implementando a tabela de payloads do \texttt{SCOPE.md}, começando pelos testes nativos com Unity.
+
+\end{document}

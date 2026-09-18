@@ -35,6 +35,7 @@ python -m ingestion --dry-run                         # roda a ingestão sem bro
 cd infra
 pip install -r requirements-test.txt
 pytest                                        # ACL/auth, InfluxDB (write+query real), Grafana (datasource+dashboard+query real), docker-compose.yml real, integração ponta a ponta completa
+pytest tests/test_mosquitto_acl.py -k nome_do_teste  # um teste específico
 docker compose up -d                          # broker (1883) + InfluxDB (8086) + Grafana (3000) locais, sem TLS
 cp .env.example .env && $EDITOR .env          # credenciais do InfluxDB/Grafana (gitignored) — só necessário pra rodar docker-compose você mesmo; os testes geram um .env sozinhos se faltar
 ./mosquitto/generate_passwd.sh <username>     # cria/atualiza infra/mosquitto/config/passwd (gitignored, pede senha interativamente)
@@ -51,6 +52,7 @@ Os testes exigem Docker rodando (sobem containers `eclipse-mosquitto:2`, `influx
 cd firmware
 pio run -e esp32dev     # compila para o ESP32 (upload requer hardware conectado)
 pio test -e native       # testes unitários (Unity) sem hardware
+pio test -e native -f test_scaffolding   # só uma suíte (filtra pelo nome da pasta em test/)
 ```
 
 ## Checkpoints (ordem de desenvolvimento)

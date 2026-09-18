@@ -178,7 +178,7 @@ def test_docker_compose_up_starts_a_working_grafana():
 
         env = _read_env_file()
         datasources = _grafana_api_get("/api/datasources", env["GRAFANA_ADMIN_PASSWORD"])
-        assert len(datasources) == 1
+        assert len(datasources) == 2
         assert datasources[0]["type"] == "influxdb"
         assert datasources[0]["jsonData"]["organization"] == env["INFLUXDB_INIT_ORG"]
         assert datasources[0]["jsonData"]["defaultBucket"] == env["INFLUXDB_INIT_BUCKET"]

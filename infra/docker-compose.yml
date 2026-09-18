@@ -41,6 +41,13 @@ services:
       INFLUXDB_INIT_ORG: ${INFLUXDB_INIT_ORG:-fsae}
       INFLUXDB_INIT_BUCKET: ${INFLUXDB_INIT_BUCKET:-telemetria}
       INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_INIT_ADMIN_TOKEN:?defina INFLUXDB_INIT_ADMIN_TOKEN no infra/.env}
+      # Plugin do caminho ao vivo (checkpoint 7). _SYNC bloqueia a subida até
+      # o plugin estar instalado -- sem isso o provisioning do datasource
+      # MQTT poderia rodar antes e falhar. Versão fixada de propósito.
+      GF_PLUGINS_PREINSTALL_SYNC: grafana-mqtt-datasource@1.3.7
+      # Senha do usuário telemetria_reader (mesma cadastrada no passwd do
+      # Mosquitto via generate_passwd.sh) pra provisioning/datasources/mqtt.yml.
+      MQTT_READER_PASSWORD: ${MQTT_READER_PASSWORD:?defina MQTT_READER_PASSWORD no infra/.env (mesma senha do telemetria_reader no passwd do Mosquitto)}
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro

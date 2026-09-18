@@ -1,0 +1,19 @@
+apiVersion: 1
+
+datasources:
+  - name: MQTT
+    uid: mqtt-live
+    type: grafana-mqtt-datasource
+    access: proxy
+    # O InfluxDB (caminho histórico) continua sendo o datasource padrão.
+    isDefault: false
+    jsonData:
+      # "mosquitto" = nome do serviço no docker-compose.yml (rede interna
+      # do compose). Sem TLS em dev local; na VPS (checkpoint 10) vira
+      # tls:// pelo Traefik.
+      uri: tcp://mosquitto:1883
+      # Usuário read-only da ACL (mosquitto/config/acl.conf): o Grafana só
+      # assina telemetria/esp32/data, nunca publica.
+      username: telemetria_reader
+    secureJsonData:
+      password: $MQTT_READER_PASSWORD

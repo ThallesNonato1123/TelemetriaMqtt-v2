@@ -40,11 +40,14 @@ docker compose up -d                          # broker (1883) + InfluxDB (8086) 
 cp .env.example .env && $EDITOR .env          # credenciais do InfluxDB/Grafana (gitignored) — só necessário pra rodar docker-compose você mesmo; os testes geram um .env sozinhos se faltar
 ./mosquitto/generate_passwd.sh <username>     # cria/atualiza infra/mosquitto/config/passwd (gitignored, pede senha interativamente)
 python3 grafana/generate_dashboard.py > grafana/dashboards/historico.json   # regenera o dashboard depois de editar a lista de painéis em generate_dashboard.py
+python3 grafana/generate_live_dashboard.py > grafana/dashboards/ao-vivo.json   # idem pro dashboard ao vivo (usa a mesma lista de painéis; regenere os dois)
 ```
 
-Os testes exigem Docker rodando (sobem containers `eclipse-mosquitto:2`, `influxdb:2` e `grafana-oss:13.0.2` de verdade, nada é mockado nesta suíte).
+Os testes exigem Docker rodando (sobem containers `eclipse-mosquitto:2`, `influxdb:2` e `grafana-oss:13.0.2` de verdade, nada é mockado nesta suíte). A primeira subida do Grafana também exige acesso à internet (baixa o plugin `grafana-mqtt-datasource` do grafana.com).
 
 **Nota operacional**: o InfluxDB só lê `infra/.env` na primeira subida (volume vazio). Se trocar as credenciais depois de já ter rodado `docker compose up` uma vez, rode `docker compose down -v` pra forçar reinicialização — senão o token antigo continua sendo o único válido, e o Grafana (e qualquer script) vai receber 401.
+
+**Nota operacional (checkpoint 7)**: o `docker-compose.yml` exige `MQTT_READER_PASSWORD` no `infra/.env` — a senha que o Grafana usa pra assinar o MQTT no painel ao vivo. Ela **precisa ser a mesma** cadastrada no passwd do Mosquitto pro usuário `telemetria_reader` (`./mosquitto/generate_passwd.sh telemetria_reader`); o projeto não sincroniza as duas. Se já tinha um `infra/.env` de antes, os testes acrescentam essa variável com um valor de teste (só pra o compose resolver) — troque pela senha real pra o painel ao vivo funcionar na sua stack. Os testes do caminho ao vivo (`test_grafana_live.py`) não dependem disso: sobem o Mosquitto com um passwd descartável e não tocam no seu `passwd`/`.env` reais.
 
 ### `firmware/` — ESP32 (PlatformIO)
 

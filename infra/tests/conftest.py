@@ -108,7 +108,18 @@ def ensure_env_file():
             f"INFLUXDB_INIT_ADMIN_TOKEN={secrets.token_hex(32)}\n"
             "GRAFANA_ADMIN_USER=admin\n"
             f"GRAFANA_ADMIN_PASSWORD={secrets.token_urlsafe(16)}\n"
+            f"MQTT_READER_PASSWORD={secrets.token_urlsafe(16)}\n"
         )
+    elif "MQTT_READER_PASSWORD=" not in ENV_PATH.read_text():
+        # .env de antes do checkpoint 7: o compose agora exige essa variável
+        # (senha do telemetria_reader que o Grafana usa no plugin MQTT).
+        # Só acrescenta o que falta, sem tocar no resto. O valor é um
+        # placeholder de teste -- os testes do caminho ao vivo passam a senha
+        # de teste por variável de ambiente, então isso só precisa existir
+        # pro compose resolver. Pro caminho ao vivo funcionar de verdade na
+        # sua stack, troque pela senha real do telemetria_reader.
+        with ENV_PATH.open("a") as env_file:
+            env_file.write(f"MQTT_READER_PASSWORD={secrets.token_urlsafe(16)}\n")
     yield
 
 

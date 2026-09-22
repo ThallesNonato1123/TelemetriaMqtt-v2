@@ -40,7 +40,7 @@ Todas as escolhas de tecnologia feitas até agora, num lugar só (ver `CLAUDE.md
 
 | Camada | Escolha |
 |---|---|
-| Firmware | PlatformIO — env `esp32dev` (Arduino framework, board ESP32 DevKit) pra produção; env `native` (Unity) pra testes unitários sem hardware |
+| Firmware | PlatformIO — env `esp32dev` (Arduino framework, board ESP32 DevKit) pra produção; env `native` (Unity) pra testes unitários sem hardware. Leitura do CAN pelo **driver TWAI** do ESP-IDF (já incluído no core Arduino-ESP32, sem biblioteca extra); parser em **C++17 puro** (`lib/can_parser`, sem dependência de Arduino) — decidido no checkpoint 8 |
 | Scripts de backend | Python 3, `pytest` (testes), `paho-mqtt` (cliente MQTT) — decidido no checkpoint 2 (mock publisher), confirmado pro script de ingestão no checkpoint 4 |
 | Broker MQTT | Mosquitto, self-hosted, TLS + ACL por dispositivo |
 | Armazenamento | InfluxDB **2.x** (confirmado no checkpoint 5, container Docker) — client oficial `influxdb-client` (Python) no script de ingestão |
@@ -103,7 +103,7 @@ Confirmado com a equipe: `bombaInput` e `giratoriaInput` são Momentary/Toggle �
 
 Essa tabela é o contrato entre a configuração do Race Studio e o parser do firmware do ESP32 — qualquer mudança de um lado precisa ser refletida no outro.
 
-**Pendência**: nenhuma decisão de protocolo em aberto. Falta apenas a configuração física no Race Studio (você) e a implementação do parser correspondente no firmware (próxima etapa).
+**Pendência**: nenhuma decisão de protocolo em aberto. Falta apenas a configuração física no Race Studio (você). O parser correspondente no firmware foi implementado no checkpoint 8 (ver seção "Firmware").
 
 ## Hardware
 
@@ -119,6 +119,17 @@ Referências de compra (Mercado Livre, entrega Brasil):
 - **Tooling**: PlatformIO (não Arduino IDE).
 - **Credenciais**: `secrets.h` no `.gitignore` desde o primeiro commit, com `secrets.h.example` versionado como template. Nunca hardcoded em arquivo rastreado pelo git.
 - **TLS**: certificado real (Let's Encrypt) no broker, sem `setInsecure()`.
+
+### Parser CAN (checkpoint 8)
+
+- **Estrutura**: a decodificação mora em `firmware/lib/can_parser/` (C++17 puro, sem Arduino/ESP-IDF) e a leitura do barramento em `firmware/src/can_twai.*` (só no alvo `esp32dev`). Essa separação existe pra que tudo que tem lógica seja testável nativamente com Unity, sem hardware; o que depende do driver fica fino o bastante pra não esconder bug.
+- **Interface**: `parse_frame(const CanFrame&, Telemetry&) -> bool`. `Telemetry` guarda os últimos valores dos 20 sinais, com os **mesmos nomes** das chaves do JSON do MQTT (contrato do `mock_publisher`), então o checkpoint 9 serializa direto dela. Cada quadro atualiza só os campos do seu payload.
+- **Bytes**: floats IEEE 754 e `uint16` em little endian, montados byte a byte (nada de cast de ponteiro): correto em qualquer endianness e sem problema de alinhamento.
+- **Política de quadros inválidos** (decisão minha, sem regra no protocolo — revisável): ID fora da tabela, DLC **menor** que o do contrato e quadro estendido (29 bits) são rejeitados e **não alteram nada** em `Telemetry` (validação completa antes de qualquer escrita). DLC **maior** que o do contrato é aceito e os bytes extras ignorados — os bytes do contrato continuam no mesmo lugar.
+- **TWAI**: 500 kbps, filtro aceita tudo (quem descarta o que não é da tabela é o parser), modo **NORMAL**. Escolhi NORMAL e não LISTEN_ONLY porque este documento registra que nada mais usa o CAN2: se o ESP32 for o único receptor, sem ACK o PDM veria erro em todo quadro e retransmitiria sem parar. O firmware nunca chama `twai_transmit()`, então no modo normal só dá ACK e não escreve dados no barramento. **A confirmar no carro/bancada** (se houver outro nó no CAN2 dando ACK, LISTEN_ONLY passa a ser a opção mais segura).
+- **Pinos provisórios**: TX = GPIO21, RX = GPIO22 (os do exemplo oficial do ESP-IDF, fora dos pinos de boot). Confirmar contra a fiação do SN65HVD230; só duas constantes em `can_twai.cpp` mudam.
+- **O que não é verificado por teste**: `can_twai.cpp` e o `main.cpp` só têm garantia de **compilar** (`pio run -e esp32dev`). Que o TWAI realmente recebe quadros do PDM só se confirma com hardware. O CI também roda só os testes nativos, não compila o alvo `esp32dev`.
+- **Fora do escopo deste checkpoint**: montar/publicar o JSON, WiFi, MQTT e TLS (checkpoint 9); o `main.cpp` só imprime um resumo na serial pra conferência na bancada.
 
 ## Simulador de desenvolvimento (mock, sem hardware)
 

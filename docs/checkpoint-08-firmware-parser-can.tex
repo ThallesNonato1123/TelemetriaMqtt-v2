@@ -1,0 +1,296 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{parskip}
+\usepackage{titlesec}
+
+\hypersetup{colorlinks=true, linkcolor=blue!50!black, urlcolor=blue!50!black, citecolor=blue!50!black}
+
+\definecolor{codebg}{RGB}{245,245,245}
+\definecolor{codegray}{RGB}{110,110,110}
+\definecolor{codegreen}{RGB}{0,110,0}
+\definecolor{codeblue}{RGB}{30,80,180}
+
+\lstdefinestyle{code}{
+    backgroundcolor=\color{codebg}, basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{codeblue}, commentstyle=\color{codegray}\itshape,
+    stringstyle=\color{codegreen}, breaklines=true, breakatwhitespace=false,
+    frame=single, rulecolor=\color{black!15}, numbers=left,
+    numberstyle=\tiny\color{codegray}, xleftmargin=1.8em, framexleftmargin=1.5em,
+    showstringspaces=false, tabsize=2,
+    literate=
+      {á}{{\'a}}1 {à}{{\`a}}1 {ã}{{\~a}}1 {â}{{\^a}}1
+      {é}{{\'e}}1 {ê}{{\^e}}1 {í}{{\'i}}1
+      {ó}{{\'o}}1 {õ}{{\~o}}1 {ô}{{\^o}}1 {ú}{{\'u}}1
+      {ç}{{\c c}}1 {Á}{{\'A}}1 {É}{{\'E}}1 {Í}{{\'I}}1
+      {Ó}{{\'O}}1 {Ú}{{\'U}}1 {Ã}{{\~A}}1 {Õ}{{\~O}}1
+      {Ç}{{\c C}}1 {°}{{\textdegree}}1,
+}
+\lstset{style=code}
+
+\titleformat{\section}{\normalfont\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{1em}{}
+
+\sloppy
+
+\title{\textbf{TelemetriaMqtt v2 --- Checkpoint 8} \\[4pt]
+\large Firmware --- parser CAN (TWAI)}
+\author{Projeto de Telemetria FSAE}
+\date{18 de setembro de 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent Este documento detalha o oitavo checkpoint do projeto: a primeira parte do firmware do ESP32, que lê os quadros CAN do PDM32 e os decodifica nos 20 sinais de telemetria. A decodificação foi isolada numa biblioteca em C++ puro, totalmente testada sem hardware, e a leitura do barramento ficou numa camada fina que só a compilação verifica. O documento registra com clareza o que está provado por teste e o que só será provado quando o hardware chegar.
+\end{abstract}
+
+\tableofcontents
+
+\section{Contexto e objetivo}
+
+Até o checkpoint 7 todo o caminho \emph{depois} do dispositivo estava pronto e testado: broker, ingestão, InfluxDB e os dois dashboards, alimentados por um mock em Python que finge ser o ESP32. Este checkpoint começa o dispositivo de verdade. O ESP32 é ligado ao CAN2 do carro por um transceiver SN65HVD230; o PDM32 transmite ali 10 quadros (IDs \texttt{0x100} a \texttt{0x131}, definidos no Race Studio) e o firmware precisa transformá-los nos mesmos 20 sinais que o mock já publica.
+
+O escopo aqui é \textbf{só a leitura e a decodificação}. Montar o JSON, WiFi, MQTT e TLS ficam para o checkpoint 9.
+
+\section{Decisão de arquitetura: separar decodificação e hardware}
+
+O ponto central do desenho é dividir o código em duas partes com garantias diferentes:
+
+\begin{center}
+\begin{tabularx}{\textwidth}{lXl}
+\toprule
+\textbf{Parte} & \textbf{Responsabilidade} & \textbf{Como é verificada} \\
+\midrule
+\texttt{lib/can\_parser} & Converter um quadro \texttt{(id, dlc, bytes)} em valores dos sinais. C++17 puro, sem Arduino nem ESP-IDF. & Testes nativos (Unity), no PC. \\
+\texttt{src/can\_twai.*} & Instalar o driver TWAI e entregar os quadros recebidos ao parser. Só existe no alvo \texttt{esp32dev}. & Apenas compilação. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+A razão é a metodologia do projeto: TDD obrigatório e nenhum checkpoint fechado com testes falhando. Tudo o que tem lógica (offsets, ordem dos bytes, validações) precisa poder ser testado sem o ESP32. Empurrando essa lógica para uma biblioteca sem dependências de plataforma, a camada que depende do driver fica tão fina que há pouco onde um bug se esconder.
+
+\section{Estrutura adicionada}
+
+\begin{lstlisting}[caption={Arquivos novos e alterados}]
+firmware/
+  lib/can_parser/
+    can_parser.h            (novo: CanFrame, Telemetry, parse_frame)
+    can_parser.cpp          (novo: decodificação)
+  src/
+    can_twai.h              (novo)
+    can_twai.cpp            (novo: driver TWAI, só esp32dev)
+    main.cpp                (alterado: lê, decodifica, imprime na serial)
+  test/test_can_parser/
+    test_main.cpp           (novo: 20 testes)
+\end{lstlisting}
+
+\section{O contrato: tabela de payloads}
+
+O parser implementa exatamente a tabela ``Plano de payloads'' do \texttt{SCOPE.md}, que é o contrato entre a configuração do Race Studio e o firmware. Todos os valores são little endian; os \texttt{float} são IEEE 754 de 32 bits.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{lrrXX}
+\toprule
+\textbf{ID} & \textbf{Freq} & \textbf{DLC} & \textbf{Bytes 0--3} & \textbf{Bytes 4--7} \\
+\midrule
+\texttt{0x100} & 20 Hz & 8 & \texttt{rpm} & \texttt{throttlePosition} \\
+\texttt{0x101} & 20 Hz & 8 & \texttt{lambda} & \texttt{map} \\
+\texttt{0x110} & 10 Hz & 8 & \texttt{gpsSpeed} & \texttt{shifterCurrent} \\
+\texttt{0x111} & 10 Hz & 8 & \texttt{bicosD1Current} & \texttt{bicosD2Current} \\
+\texttt{0x112} & 10 Hz & 8 & \texttt{bobinasCurrent} & \texttt{poTotCurrent} \\
+\texttt{0x113} & 10 Hz & 8 & \texttt{poTotCrntAll} & \texttt{partidaCurrent} \\
+\texttt{0x114} & 10 Hz & 4 & \texttt{extBattery} & --- \\
+\texttt{0x120} & 5 Hz & 8 & \texttt{ventoinhaCurrent} & \texttt{bombaCurrent} \\
+\texttt{0x130} & 2 Hz & 8 & \texttt{engineTemp} & \texttt{airTemp} \\
+\texttt{0x131} & 2 Hz & 8 & \texttt{brakeLightCurrent} & \texttt{bombaInput} (\texttt{uint16}, bytes 4--5) e \texttt{giratoriaInput} (\texttt{uint16}, bytes 6--7) \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Os dois inputs digitais são \texttt{uint16} e não \texttt{float} porque só valem 0 ou 1 (Momentary/Toggle), como registrado no \texttt{SCOPE.md}.
+
+\section{O parser}
+
+\subsection{Interface}
+
+\begin{lstlisting}[language=C++,caption={firmware/lib/can\_parser/can\_parser.h (resumo)}]
+struct CanFrame {
+  uint32_t id;
+  uint8_t dlc;
+  bool extended;      // true = ID de 29 bits
+  uint8_t data[8];
+};
+
+struct Telemetry {
+  float rpm, throttlePosition, lambda, map;   // 0x100, 0x101
+  float gpsSpeed, shifterCurrent, ...;        // 0x110..0x114
+  // ... 18 floats no total
+  uint16_t bombaInput;
+  uint16_t giratoriaInput;
+};
+
+bool parse_frame(const CanFrame &frame, Telemetry &out);
+\end{lstlisting}
+
+Os campos de \texttt{Telemetry} têm \textbf{exatamente os mesmos nomes} das chaves do JSON que o \texttt{mock\_publisher} envia. No checkpoint 9 o firmware poderá serializar a estrutura direto para o mesmo contrato, sem tabela de tradução. Ela guarda os \emph{últimos valores conhecidos}: cada quadro atualiza só os campos do seu payload e deixa os outros como estavam. Isso importa porque os payloads chegam em frequências diferentes (de 20 Hz a 2 Hz).
+
+A estrutura foi feita sem \emph{padding} de propósito (18 \texttt{float} e 2 \texttt{uint16}, 76 bytes). Assim os testes conseguem comparar duas instâncias byte a byte e provar que um quadro inválido não alterou nada; um \texttt{static\_assert} nos testes garante essa propriedade.
+
+\subsection{Decodificação byte a byte}
+
+\begin{lstlisting}[language=C++,caption={Leitura de um float little endian}]
+float read_f32_le(const uint8_t *p) {
+  const uint32_t bits = static_cast<uint32_t>(p[0])
+                      | (static_cast<uint32_t>(p[1]) << 8)
+                      | (static_cast<uint32_t>(p[2]) << 16)
+                      | (static_cast<uint32_t>(p[3]) << 24);
+  float value;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+\end{lstlisting}
+
+Em vez de converter o ponteiro para \texttt{float*}, os quatro bytes são montados num inteiro e só então reinterpretados com \texttt{memcpy}. Isso dá o resultado correto em qualquer endianness do processador e evita leitura desalinhada. O ESP32 e o PC x86 dos testes são ambos little endian, mas o código não depende disso.
+
+\subsection{Política para quadros inválidos}
+
+O protocolo não diz o que fazer com um quadro que não se encaixa, então esta é uma decisão de projeto, registrada no \texttt{SCOPE.md} e aberta a revisão:
+
+\begin{center}
+\begin{tabularx}{\textwidth}{lXl}
+\toprule
+\textbf{Situação} & \textbf{Motivo} & \textbf{Resultado} \\
+\midrule
+ID fora da tabela & Não é um payload do PDM configurado. & Rejeita \\
+Quadro estendido (29 bits) & O PDM foi configurado com IDs de 11 bits; um estendido com o mesmo número é outro endereço, de outro dispositivo. & Rejeita \\
+DLC menor que o do contrato & Não há bytes suficientes para ler os campos. & Rejeita \\
+DLC maior que o do contrato & Os bytes do contrato continuam no mesmo lugar (por exemplo, \texttt{0x114} configurado com 8 em vez de 4). & Aceita, ignora o resto \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Quando rejeita, o parser \textbf{não escreve nada} em \texttt{Telemetry}: a validação completa (estendido, ID, DLC) acontece antes de qualquer atribuição, então não existe caminho que devolva \texttt{false} depois de ter alterado um campo. Uma falha de leitura nunca deixa a telemetria meio atualizada.
+
+\section{A camada TWAI (só hardware)}
+
+\texttt{can\_twai.cpp} instala o driver, lê os quadros da fila e os converte em \texttt{CanFrame}. Tem 49 linhas e nenhuma lógica de decodificação. Três decisões merecem destaque.
+
+\begin{itemize}
+    \item \textbf{Modo NORMAL e não LISTEN\_ONLY.} O \texttt{SCOPE.md} registra que nada mais usa o CAN2 do carro. Se o ESP32 for o único receptor, ninguém daria \emph{ACK} aos quadros do PDM, e o PDM enxergaria erro em todo quadro, retransmitindo sem parar. No modo normal o controlador só dá ACK. O firmware nunca chama \texttt{twai\_transmit()}, então não escreve dados no barramento. Se no carro existir outro nó dando ACK no CAN2, LISTEN\_ONLY passa a ser a opção mais segura. Isso só se confirma com hardware.
+    \item \textbf{Pinos provisórios: TX = GPIO21, RX = GPIO22.} São os do exemplo oficial do ESP-IDF, fora dos pinos de boot. Precisam ser conferidos contra a fiação real do SN65HVD230; são duas constantes no início do arquivo.
+    \item \textbf{Filtro aceita tudo, leitura sem bloqueio.} Quem descarta o que não é da tabela é o parser, que já é testado. \texttt{twai\_receive} usa timeout zero para não travar o \texttt{loop()} se a fila estiver vazia, e quadros de requisição remota (sem dados) são ignorados.
+\end{itemize}
+
+O \texttt{main.cpp} lê todos os quadros pendentes a cada volta, chama o parser e, uma vez por segundo, imprime na serial contadores de quadros aceitos e ignorados mais alguns valores (\texttt{rpm}, \texttt{engineTemp}, \texttt{extBattery}). É só uma ferramenta de conferência na bancada até o checkpoint 9.
+
+\section{Testes}
+
+Vinte testes novos em \texttt{firmware/test/test\_can\_parser/test\_main.cpp} (Unity, ambiente \texttt{native}), agrupados assim:
+
+\begin{center}
+\begin{tabularx}{\textwidth}{lrX}
+\toprule
+\textbf{Grupo} & \textbf{Testes} & \textbf{O que provam} \\
+\midrule
+Estado inicial & 1 & \texttt{Telemetry\{\}} começa zerada. \\
+Um teste por payload & 10 & Cada ID decodifica seus campos com os valores certos, incluindo um número negativo (\texttt{airTemp}) e o quadro de 4 bytes (\texttt{0x114}). \\
+Ordem dos bytes & 1 & Os \texttt{uint16} são little endian (\texttt{0x0100} e \texttt{0xABCD}); um 0 ou 1 sozinho não distinguiria. \\
+Composição & 3 & Um quadro mexe só nos seus campos; os 10 payloads juntos preenchem os 20 sinais; um quadro novo sobrescreve o valor anterior. \\
+Entradas inválidas & 5 & ID desconhecido, DLC curto (para os 10 payloads), DLC zero, DLC maior que o contrato e quadro estendido. Os rejeitados provam que \texttt{Telemetry} não mudou. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\textbf{Os bytes esperados foram calculados de forma independente do parser}, com \texttt{struct.pack} do Python, e escritos como literais nos testes (por exemplo, \texttt{1234.5} vira \texttt{00 50 9A 44}). Se os testes reusassem a lógica do parser para gerar a expectativa, um erro de offset ou de ordem passaria despercebido nos dois lados.
+
+\subsection{Resultado da execução}
+
+\begin{lstlisting}[caption={Saída real de pio test -e native (resumo)}]
+native:test_scaffolding [PASSED]
+native:test_can_parser  [PASSED]
+================= 21 test cases: 21 succeeded in 00:00:00.793 =================
+\end{lstlisting}
+
+O alvo de hardware compila sem avisos: \texttt{pio run -e esp32dev} usa 20,9\% da flash (273\,649 de 1\,310\,720 bytes) e 6,6\% da RAM (21\,592 de 327\,680 bytes).
+
+\subsection{Como o TDD correu de fato}
+
+\begin{enumerate}
+    \item \textbf{Vermelho.} Os 20 testes foram escritos antes de existir qualquer código do parser. A execução falhou na compilação com \texttt{can\_parser.h: No such file}: o motivo certo, o módulo ainda não existia.
+    \item \textbf{Verde.} Com o parser implementado, os 20 passaram na primeira execução.
+    \item \textbf{Teste de mutação.} Passar de primeira não prova que os testes conseguem falhar. Por isso o parser foi \textbf{quebrado de propósito} de três formas, uma de cada vez, e a suíte precisou detectar cada uma. O código original foi restaurado e reconferido (21 de 21).
+\end{enumerate}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{lXl}
+\toprule
+\textbf{Mutação} & \textbf{Testes que a detectaram} & \textbf{Falhas} \\
+\midrule
+\texttt{uint16} lido em big endian & \texttt{0x131}, ordem dos bytes, 10 payloads juntos & 3 \\
+\texttt{giratoriaInput} lido do offset 4 em vez de 6 & \texttt{0x131}, ordem dos bytes & 2 \\
+Checagem de DLC removida & DLC curto, DLC zero & 2 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Um detalhe honesto sobre a segunda mutação: o teste ``10 payloads juntos'' \emph{não} a detectou, porque nele \texttt{bombaInput} e \texttt{giratoriaInput} valem ambos 1, então ler do offset errado dá o mesmo resultado. Quem pega esse erro são os dois testes dedicados ao \texttt{0x131}. É uma fraqueza pontual desse teste composto, sem consequência para a cobertura geral, mas vale saber que ele sozinho não bastaria.
+
+Nenhum teste anterior foi alterado neste checkpoint.
+
+\section{O que NÃO está verificado}
+
+\begin{itemize}
+    \item \textbf{O TWAI realmente receber quadros do PDM.} \texttt{can\_twai.cpp} e \texttt{main.cpp} têm garantia de \emph{compilar}, e nada além disso. Que o controlador sobe a 500 kbps, que os pinos estão certos e que o ACK funciona só se prova com o ESP32, o transceiver e o PDM (ou outro nó transmitindo).
+    \item \textbf{A camada física do CAN} (terminação, cabo, nível de tensão), já registrada no \texttt{SCOPE.md} como fora do escopo até haver hardware.
+    \item \textbf{O CI não compila o alvo \texttt{esp32dev}.} Ele roda só os testes nativos, então um erro de compilação em \texttt{can\_twai.cpp} passaria batido lá. Adicionar um passo de compilação custaria alguns minutos por execução (baixa o toolchain do ESP32); fica como decisão sua.
+\end{itemize}
+
+\section{Validação manual}
+
+Não há validação manual possível hoje: depende de hardware que ainda não chegou. O que dá para fazer agora é \texttt{cd firmware \&\& pio test -e native} (deve dar 21 de 21) e \texttt{pio run -e esp32dev} (deve compilar), além de ler o diff.
+
+Roteiro para quando o hardware chegar (não executado):
+\begin{enumerate}
+    \item Ligar o SN65HVD230 aos pinos definidos em \texttt{can\_twai.cpp} e ao CAN2, e gravar o firmware.
+    \item Abrir a serial (\texttt{pio device monitor}) e conferir que o contador \texttt{ok} cresce, que \texttt{ignorados} fica próximo de zero e que \texttt{rpm}, \texttt{engineTemp} e \texttt{extBattery} acompanham o carro.
+    \item Se \texttt{ok} ficar em zero, suspeitar primeiro dos pinos, da velocidade (500 kbps), do modo NORMAL contra LISTEN\_ONLY e da configuração dos payloads no Race Studio (IDs de 11 bits, DLC, ``Save'' e ``Transmit'').
+\end{enumerate}
+
+\section{Decisões para você revisar}
+
+\begin{enumerate}
+    \item \textbf{Modo NORMAL do TWAI} (em vez de LISTEN\_ONLY), pelo motivo do ACK explicado acima.
+    \item \textbf{Pinos GPIO21 e GPIO22}, a confirmar contra a fiação.
+    \item \textbf{Política de quadros inválidos}, em especial aceitar DLC maior que o do contrato.
+    \item \textbf{Compilar o alvo \texttt{esp32dev} no CI:} vale o custo em minutos por execução?
+\end{enumerate}
+
+\section{Nota sobre metodologia}
+
+O ciclo foi o do projeto: testes primeiro, vermelho pelo motivo certo, implementação, verde, e depois o teste de mutação para provar que os testes conseguem falhar. As escolhas de tecnologia foram registradas no \texttt{SCOPE.md} antes de fechar o checkpoint: o driver TWAI do ESP-IDF (já incluído no core Arduino-ESP32, sem biblioteca extra) e o parser em C++17 puro. O que não pôde ser testado foi separado do que pôde e nomeado como tal, em vez de ser tratado como coberto.
+
+\section{Resumo do que ficou pronto}
+
+\begin{itemize}
+    \item Biblioteca \texttt{can\_parser} que decodifica os 10 payloads do PDM nos 20 sinais, sem dependência de plataforma.
+    \item 20 testes nativos, com bytes esperados calculados de forma independente e validados por teste de mutação.
+    \item Camada TWAI e \texttt{main.cpp} que compilam para o ESP32 sem avisos.
+    \item Política explícita e testada para quadros inválidos: nunca deixam a telemetria meio atualizada.
+\end{itemize}
+
+\section{Próximos passos}
+
+Este checkpoint espera a sua revisão. Se aprovado, o commit fecha o checkpoint com a tag \texttt{v0.8.0}. O próximo é o \textbf{checkpoint 9}: WiFi, MQTT com TLS e a publicação do JSON no tópico \texttt{telemetria/esp32/data}, usando o \texttt{Telemetry} deste checkpoint como fonte, começando pelos testes.
+
+\end{document}
